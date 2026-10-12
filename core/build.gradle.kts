@@ -20,7 +20,14 @@ kotlin {
     }
 
     sourceSets {
-        commonTest.dependencies {
+        // Codigo que usa java.io / java.util.zip / java.security y corre igual en Android y en JVM (desktop).
+        val jvmAndroidMain = create("jvmAndroidMain") {
+            dependsOn(getByName("commonMain"))
+        }
+        getByName("jvmMain").dependsOn(jvmAndroidMain)
+        getByName("androidMain").dependsOn(jvmAndroidMain)
+
+        getByName("commonTest").dependencies {
             implementation(libs.kotlin.test)
         }
     }

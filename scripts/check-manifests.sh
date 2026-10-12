@@ -25,4 +25,14 @@ if ! grep -q 'android.permission.INTERNET' "$full"; then
     exit 1
 fi
 
+if grep -q 'android.permission.ACCESS_FINE_LOCATION' "$bt"; then
+    echo "btOnly no deberia pedir ubicacion: $bt" >&2
+    exit 1
+fi
+
+if ! grep -q 'android.permission.BLUETOOTH_CONNECT' "$bt"; then
+    echo "btOnly deberia pedir BLUETOOTH_CONNECT: $bt" >&2
+    exit 1
+fi
+
 echo "ok: btOnly sin INTERNET, full con INTERNET"

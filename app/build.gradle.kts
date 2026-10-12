@@ -51,8 +51,12 @@ android {
 
 dependencies {
     implementation(project(":core"))
+    implementation(project(":source-saf"))
     implementation(project(":transport-rfcomm"))
     "fullImplementation"(project(":backend-drive"))
+
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.androidx.documentfile) // solo para comparar su velocidad contra DocumentsContract en el laboratorio SAF
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)

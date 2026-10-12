@@ -3,7 +3,10 @@
 Guarda las partidas de tus emuladores como un control de versiones (estilo git) y las sincroniza
 entre dispositivos. Como las memory cards de PlayStation, pero con historial.
 
-Estado: **M0, esqueleto**. Todavia no sincroniza nada.
+Estado: **M1, laboratorios**. Todavia no sincroniza saves; la app trae dos pantallas de prueba:
+
+- **Laboratorio SAF**: elegir carpeta de saves, listar, snapshot (hash + zip), restaurar a carpeta de prueba o (con el switch) a la carpeta real con respaldo previo.
+- **Laboratorio Bluetooth**: un celular en «Esperar», el otro mide ping, throughput (1/5/20 MB) y estabilidad. Los celulares deben estar emparejados antes. Los logs se exportan con el boton «Exportar».
 
 ## Versiones de la app
 
