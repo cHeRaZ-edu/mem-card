@@ -19,6 +19,20 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // btOnly: version para Play Store, sin permiso INTERNET y sin codigo del drive.
+    // full: igual + modo muve drive. Se instalan lado a lado (applicationId distinto).
+    flavorDimensions += "dist"
+    productFlavors {
+        create("btOnly") {
+            dimension = "dist"
+        }
+        create("full") {
+            dimension = "dist"
+            applicationIdSuffix = ".full"
+            versionNameSuffix = "-full"
+        }
+    }
+
     buildTypes {
         release {
             optimization {
@@ -36,6 +50,10 @@ android {
 }
 
 dependencies {
+    implementation(project(":core"))
+    implementation(project(":transport-rfcomm"))
+    "fullImplementation"(project(":backend-drive"))
+
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)

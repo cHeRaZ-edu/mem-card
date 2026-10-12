@@ -24,3 +24,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "memcard"
 include(":app")
+include(":core")
+include(":transport-rfcomm")
+include(":backend-drive")
