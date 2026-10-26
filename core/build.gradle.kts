@@ -3,6 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.kotlin.multiplatform.library)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 // Logica pura: sin Compose, sin Android SDK en commonMain. Desktop (Linux/Windows) entra despues por el target jvm.
@@ -27,6 +28,9 @@ kotlin {
         getByName("jvmMain").dependsOn(jvmAndroidMain)
         getByName("androidMain").dependsOn(jvmAndroidMain)
 
+        getByName("commonMain").dependencies {
+            api(libs.kotlinx.serialization.json)
+        }
         getByName("commonTest").dependencies {
             implementation(libs.kotlin.test)
         }

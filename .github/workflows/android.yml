@@ -1,5 +1,6 @@
-# Compila en cada push a cualquier rama: pruebas de core, APK debug de los dos flavors
-# y revision de que btOnly no pida INTERNET. Los APK quedan como artefacto del run.
+# Compila en cada push a cualquier rama: pruebas de core y desktop, APK debug de los dos flavors,
+# revision de que btOnly no pida INTERNET, y la app de Windows portable (con Java y muve.exe incluidos).
+# Los APK y el zip de Windows quedan como artefactos del run.
 name: android
 
 on:
@@ -26,8 +27,8 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Pruebas de core (JVM)
-        run: ./gradlew :core:jvmTest :transport-rfcomm:testDebugUnitTest --stacktrace
+      - name: Pruebas de core y desktop (JVM)
+        run: ./gradlew :core:jvmTest :desktop:test :transport-rfcomm:testDebugUnitTest --stacktrace
 
       - name: Compilar APK debug (btOnly y full)
         run: ./gradlew :app:assembleBtOnlyDebug :app:assembleFullDebug --stacktrace
@@ -42,5 +43,41 @@ jobs:
         with:
           name: memcard-debug-apks
           path: app/build/outputs/apk/*/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Bajar muve.exe (ultimo release publico)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force desktop/resources/windows | Out-Null
+          Invoke-WebRequest https://github.com/cHeRaZ-edu/muve/releases/latest/download/muve-windows-amd64.exe -OutFile desktop/resources/windows/muve.exe
+          & desktop/resources/windows/muve.exe version
+
+      - name: Pruebas de core (Windows)
+        run: ./gradlew.bat :core:jvmTest --stacktrace
+
+      - name: App portable (carpeta con Java incluido)
+        run: ./gradlew.bat :desktop:createDistributable --stacktrace
+
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path desktop/build/compose/binaries/main/app/mem-card -DestinationPath mem-card-windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memcard-windows
+          path: mem-card-windows.zip
           if-no-files-found: error
           retention-days: 14
