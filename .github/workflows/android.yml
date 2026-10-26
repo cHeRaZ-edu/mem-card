@@ -75,6 +75,15 @@ jobs:
           MEMCARD_PACKAGING_JDK: ${{ env.JAVA_HOME_21_X64 }}
         run: bash scripts/gradle-annotate.sh :desktop:createDistributable --stacktrace
 
+      - name: Revisar que muve.exe y el exe de la app vengan adentro
+        shell: pwsh
+        run: |
+          $app = "desktop/build/compose/binaries/main/app/mem-card"
+          if (-not (Test-Path "$app/mem-card.exe")) { throw "falta mem-card.exe" }
+          $muve = Get-ChildItem -Recurse -Filter muve.exe $app | Select-Object -First 1
+          if (-not $muve) { throw "falta muve.exe dentro de la app" }
+          Write-Host "muve.exe en $($muve.FullName)"
+
       - name: Zip
         shell: pwsh
         run: Compress-Archive -Path desktop/build/compose/binaries/main/app/mem-card -DestinationPath mem-card-windows.zip
