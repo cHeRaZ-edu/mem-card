@@ -39,7 +39,7 @@ data class GameManifest(
 ) {
     fun find(id: String?): SaveVersion? = id?.let { i -> versions.firstOrNull { it.id == i } }
 
-    fun withVersion(v: SaveVersion): GameManifest = merge(this, copy(versions = listOf(v)))
+    fun withVersion(v: SaveVersion): GameManifest = merge(this, copy(versions = listOf(v)))!!
 
     fun withLabel(id: String, label: String, at: Long): GameManifest =
         copy(versions = versions.map { if (it.id == id) it.copy(label = label, labelAt = at) else it })
