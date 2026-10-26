@@ -84,6 +84,17 @@ jobs:
           if (-not $muve) { throw "falta muve.exe dentro de la app" }
           Write-Host "muve.exe en $($muve.FullName)"
 
+      - name: Revisar que las clases carguen en el Java incluido (max Java 21 = version 65)
+        shell: bash
+        run: |
+          app=desktop/build/compose/binaries/main/app/mem-card/app
+          for jar in "$app"/core-jvm*.jar "$app"/desktop-*.jar; do
+            cls=$(unzip -Z1 "$jar" | grep '\.class$' | head -1)
+            major=$(unzip -p "$jar" "$cls" | od -An -tu1 -j6 -N2 | awk '{print $1*256+$2}')
+            echo "$(basename "$jar"): $cls version $major"
+            [ "$major" -le 65 ] || { echo "::error::$(basename "$jar") compilado para version $major (> 65)"; exit 1; }
+          done
+
       - name: Zip
         shell: pwsh
         run: Compress-Archive -Path desktop/build/compose/binaries/main/app/mem-card -DestinationPath mem-card-windows.zip

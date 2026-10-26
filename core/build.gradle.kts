@@ -8,7 +8,12 @@ plugins {
 
 // Logica pura: sin Compose, sin Android SDK en commonMain. Desktop (Linux/Windows) entra despues por el target jvm.
 kotlin {
-    jvm()
+    // Java 17: el runtime que trae la app de Windows es 21 y no carga clases mas nuevas.
+    jvm {
+        compilerOptions {
+            jvmTarget = JvmTarget.JVM_17
+        }
+    }
 
     android {
         namespace = "com.cheraz.memcard.core"
