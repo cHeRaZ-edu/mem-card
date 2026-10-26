@@ -1,3 +1,5 @@
+import java.net.URI
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -68,7 +70,7 @@ val fetchMuve = tasks.register("fetchMuve") {
     doLast {
         out.parentFile.mkdirs()
         val tmp = File(out.parentFile, "libmuve.so.part")
-        java.net.URI("https://github.com/cHeRaZ-edu/muve/releases/latest/download/muve-android-arm64")
+        URI("https://github.com/cHeRaZ-edu/muve/releases/latest/download/muve-android-arm64")
             .toURL().openStream().use { input -> tmp.outputStream().use { input.copyTo(it) } }
         val head = tmp.inputStream().use { it.readNBytes(4) }
         check(head.contentEquals(byteArrayOf(0x7f, 'E'.code.toByte(), 'L'.code.toByte(), 'F'.code.toByte()))) {
