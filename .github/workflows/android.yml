@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
@@ -28,10 +28,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Pruebas de core y desktop (JVM)
-        run: ./gradlew :core:jvmTest :desktop:test :transport-rfcomm:testDebugUnitTest --stacktrace
+        run: bash scripts/gradle-annotate.sh :core:jvmTest :desktop:test :transport-rfcomm:testDebugUnitTest --stacktrace
 
       - name: Compilar APK debug (btOnly y full)
-        run: ./gradlew :app:assembleBtOnlyDebug :app:assembleFullDebug --stacktrace
+        run: bash scripts/gradle-annotate.sh :app:assembleBtOnlyDebug :app:assembleFullDebug --stacktrace
 
       - name: btOnly sin INTERNET, full con INTERNET
         run: sh scripts/check-manifests.sh
@@ -51,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -66,10 +66,12 @@ jobs:
           & desktop/resources/windows/muve.exe version
 
       - name: Pruebas de core (Windows)
-        run: ./gradlew.bat :core:jvmTest --stacktrace
+        shell: bash
+        run: bash scripts/gradle-annotate.sh :core:jvmTest --stacktrace
 
       - name: App portable (carpeta con Java incluido)
-        run: ./gradlew.bat :desktop:createDistributable --stacktrace
+        shell: bash
+        run: bash scripts/gradle-annotate.sh :desktop:createDistributable --stacktrace
 
       - name: Zip
         shell: pwsh
