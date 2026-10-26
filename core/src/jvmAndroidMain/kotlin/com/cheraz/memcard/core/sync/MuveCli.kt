@@ -1,10 +1,6 @@
-package com.cheraz.memcard.desktop
+package com.cheraz.memcard.core.sync
 
 import com.cheraz.memcard.core.history.GameManifest
-import com.cheraz.memcard.core.sync.DriveConflictException
-import com.cheraz.memcard.core.sync.DriveException
-import com.cheraz.memcard.core.sync.DriveStore
-import com.cheraz.memcard.core.sync.RemoteManifest
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -15,34 +11,41 @@ import java.util.concurrent.TimeUnit
  *
  * muve no tiene salida JSON, asi que se leen sus textos: `version:  N` de `info`, y los errores
  * "No existe ese archivo", "version actual en la nube"/"No se piso nada" (409) y "ya existe en la nube".
+ *
+ * Lo usan desktop (muve.exe incluido) y Android (binario de muve dentro del APK).
  */
 class MuveCli(
-    private val settings: () -> AppSettings,
+    private val config: () -> MuveConfig,
     private val workDir: File,
     private val timeoutSeconds: Long = 300,
 ) : DriveStore {
 
-    class Result(val code: Int, val out: String, val err: String)
-
-    fun executable(): String {
-        val s = settings()
-        if (s.muvePath.isNotBlank()) return s.muvePath
-        AppPaths.bundledMuve()?.let { return it.absolutePath }
-        return if (System.getProperty("os.name").lowercase().contains("win")) "muve.exe" else "muve"
+    /** @param env variables extra para el proceso (en Android: HOME, proxy, certificados). */
+    data class MuveConfig(
+        val executable: String,
+        val server: String,
+        val apiKey: String,
+        val app: String = "memcard",
+        val env: Map<String, String> = emptyMap(),
+    ) {
+        val configured get() = server.isNotBlank() && apiKey.isNotBlank()
     }
 
+    class Result(val code: Int, val out: String, val err: String)
+
     fun run(vararg args: String, stdoutFile: File? = null): Result {
-        val s = settings()
+        val s = config()
         if (!s.configured) throw DriveException("Falta configurar el servidor y la llave del drive")
         workDir.mkdirs()
-        val cmd = listOf(executable(), "--config", File(workDir, "muve-config.json").absolutePath, "--app", s.app, "-q") + args
+        val cmd = listOf(s.executable, "--config", File(workDir, "muve-config.json").absolutePath, "--app", s.app, "-q") + args
         val pb = ProcessBuilder(cmd).directory(workDir)
         pb.environment().apply {
+            remove("MUVE_SECRET")
+            remove("MUVE_CONFIG")
+            putAll(s.env)
             put("MUVE_SERVER", s.server.trim().trimEnd('/'))
             put("MUVE_APP", s.app)
             put("MUVE_API_KEY", s.apiKey.trim())
-            remove("MUVE_SECRET")
-            remove("MUVE_CONFIG")
         }
         val errFile = File.createTempFile("muve", ".err", workDir)
         val outFile = stdoutFile ?: File.createTempFile("muve", ".out", workDir)
@@ -51,7 +54,7 @@ class MuveCli(
             val p = try {
                 pb.start()
             } catch (e: java.io.IOException) {
-                throw DriveException("No se pudo ejecutar muve (${executable()}): ${e.message}")
+                throw DriveException("No se pudo ejecutar muve (${s.executable}): ${e.message}")
             }
             if (!p.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
                 p.destroyForcibly()

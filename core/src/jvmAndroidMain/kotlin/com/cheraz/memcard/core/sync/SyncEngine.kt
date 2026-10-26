@@ -7,6 +7,7 @@ import com.cheraz.memcard.core.history.History
 import com.cheraz.memcard.core.history.SaveVersion
 import com.cheraz.memcard.core.history.Ulid
 import com.cheraz.memcard.core.source.FolderSource
+import com.cheraz.memcard.core.source.SaveFolder
 import com.cheraz.memcard.core.source.ZipFileSource
 import kotlinx.serialization.Serializable
 import java.io.File
@@ -17,6 +18,8 @@ import java.util.zip.ZipFile
 /**
  * Un juego enlazado a una carpeta de este dispositivo. Lo guarda quien use el motor.
  *
+ * @param folder donde vive el save en este dispositivo: ruta en desktop, URI de arbol SAF en Android
+ *   (lo interpreta el `folderOf` del [SyncEngine]).
  * @param head version a la que corresponde la carpeta ahorita (la ultima que se subio o restauro).
  * @param pending snapshot local que no se subio porque abriria otro camino y el usuario dijo que no
  *   (o aun no contesta). Se queda solo en este dispositivo.
@@ -75,6 +78,8 @@ class SyncEngine(
     private val device: String,
     private val clock: () -> Long = System::currentTimeMillis,
     private val maxBackups: Int = 10,
+    /** Como abrir la carpeta de un juego. Por defecto [GameLink.folder] es una ruta normal. */
+    private val folderOf: (GameLink) -> SaveFolder = { FolderSource(File(it.folder)) },
 ) {
     private val lock = Any()
     private val snapshots = SnapshotService()
@@ -82,16 +87,16 @@ class SyncEngine(
 
     // ---------- juegos ----------
 
-    fun createGame(name: String, folder: File): GameLink =
-        GameLink(gameId = Ulid.next(clock()), name = name.trim(), folder = folder.absolutePath)
+    fun createGame(name: String, folder: String): GameLink =
+        GameLink(gameId = Ulid.next(clock()), name = name.trim(), folder = folder)
 
     /** Juegos que ya estan en la nube (para enlazarlos en este dispositivo). */
     fun listCloudGames(): List<GameManifest> = synchronized(lock) {
         drive.listGameIds().mapNotNull { id -> pull(id) }.sortedBy { it.name.lowercase() }
     }
 
-    fun linkFromCloud(manifest: GameManifest, folder: File): GameLink =
-        GameLink(gameId = manifest.gameId, name = manifest.name, folder = folder.absolutePath)
+    fun linkFromCloud(manifest: GameManifest, folder: String): GameLink =
+        GameLink(gameId = manifest.gameId, name = manifest.name, folder = folder)
 
     fun cachedManifest(gameId: String): GameManifest? = synchronized(lock) { readCached(gameId) }
 
@@ -114,7 +119,7 @@ class SyncEngine(
     }
 
     /** Hash del contenido actual de la carpeta (sin zip). */
-    fun localHash(link: GameLink): String = snapshots.snapshot(FolderSource(File(link.folder)), null).hash
+    fun localHash(link: GameLink): String = snapshots.snapshot(folderOf(link), null).hash
 
     // ---------- subir ----------
 
@@ -129,7 +134,7 @@ class SyncEngine(
     private fun commitLocked(link: GameLink, label: String, allowFork: Boolean): CommitOutcome {
         val tmp = tempFile()
         try {
-            val snap = FileOutputStream(tmp).use { snapshots.snapshot(FolderSource(File(link.folder)), it) }
+            val snap = FileOutputStream(tmp).use { snapshots.snapshot(folderOf(link), it) }
             if (snap.hash == link.headHash) {
                 return CommitOutcome.Unchanged(link.copy(pending = null, pendingDeclined = false))
             }
@@ -206,9 +211,8 @@ class SyncEngine(
         val version = manifest?.find(versionId) ?: throw IllegalArgumentException("No existe la version $versionId")
         val blob = ensureBlob(version.hash)
 
-        val folder = File(link.folder)
-        folder.mkdirs()
-        val source = FolderSource(folder)
+        val source = folderOf(link)
+        source.ensureExists()
         backup(link, source)
 
         FileInputStream(blob).use { restorer.restore(it, source.list(), source) }
@@ -221,7 +225,7 @@ class SyncEngine(
 
     fun backupDir(gameId: String) = File(cacheDir, "backups/$gameId")
 
-    private fun backup(link: GameLink, source: FolderSource) {
+    private fun backup(link: GameLink, source: SaveFolder) {
         val dir = backupDir(link.gameId).apply { mkdirs() }
         val tmp = tempFile()
         val snap = FileOutputStream(tmp).use { snapshots.snapshot(source, it) }

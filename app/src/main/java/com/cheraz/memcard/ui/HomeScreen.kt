@@ -12,14 +12,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.ui.unit.dp
+import com.cheraz.memcard.Flavor
 
 @Composable
 fun HomeScreen(modifier: Modifier, onOpen: (Screen) -> Unit) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("MemCard", style = MaterialTheme.typography.headlineMedium)
-        Text("Laboratorios M1: miden si SAF y Bluetooth sirven en este celular.")
+        Text(if (Flavor.HAS_DRIVE) "Partidas con historial en tu muve drive, y los laboratorios de M1." else "Laboratorios M1: miden si SAF y Bluetooth sirven en este celular.")
         Text("${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         Spacer(Modifier.height(8.dp))
+        if (Flavor.HAS_DRIVE) {
+            Button(onClick = { onOpen(Screen.DRIVE) }, modifier = Modifier.fillMaxWidth()) { Text("Partidas (muve drive)") }
+        }
         Button(onClick = { onOpen(Screen.SAF_LAB) }, modifier = Modifier.fillMaxWidth()) { Text("Laboratorio SAF (carpetas)") }
         Button(onClick = { onOpen(Screen.BT_LAB) }, modifier = Modifier.fillMaxWidth()) { Text("Laboratorio Bluetooth") }
     }

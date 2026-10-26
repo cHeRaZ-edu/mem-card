@@ -25,3 +25,9 @@ interface SaveSink {
     /** Borra [path]. */
     fun delete(path: String)
 }
+
+/** Una carpeta de save que se puede leer y escribir (carpeta normal en desktop, arbol de SAF en Android). */
+interface SaveFolder : SaveSource, SaveSink {
+    /** Crea la carpeta si no existe (antes de restaurar). */
+    fun ensureExists() {}
+}

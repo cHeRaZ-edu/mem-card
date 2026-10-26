@@ -1,6 +1,7 @@
 package com.cheraz.memcard.desktop
 
 import com.cheraz.memcard.core.sync.GameLink
+import com.cheraz.memcard.core.sync.MuveCli
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -23,6 +24,14 @@ data class AppSettings(
     val games: List<GameLink> = emptyList(),
 ) {
     val configured get() = server.isNotBlank() && apiKey.isNotBlank()
+
+    /** muve a usar: el de Ajustes, el que trae la app, o el del PATH. */
+    fun muveExecutable(): String = muvePath.ifBlank {
+        AppPaths.bundledMuve()?.absolutePath
+            ?: if (System.getProperty("os.name").lowercase().contains("win")) "muve.exe" else "muve"
+    }
+
+    fun toMuveConfig() = MuveCli.MuveConfig(muveExecutable(), server, apiKey, app)
 
     companion object {
         fun defaultDevice(): String =

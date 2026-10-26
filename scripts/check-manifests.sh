@@ -36,3 +36,16 @@ if ! grep -q 'android.permission.BLUETOOTH_CONNECT' "$bt"; then
 fi
 
 echo "ok: btOnly sin INTERNET, full con INTERNET"
+
+# El APK full trae muve (libmuve.so) y btOnly no.
+full_apk="$(find app/build/outputs/apk/full/debug -name '*.apk' | head -1)"
+bt_apk="$(find app/build/outputs/apk/btOnly/debug -name '*.apk' | head -1)"
+if ! unzip -l "$full_apk" | grep -q 'lib/arm64-v8a/libmuve.so'; then
+    echo "el APK full no trae lib/arm64-v8a/libmuve.so" >&2
+    exit 1
+fi
+if unzip -l "$bt_apk" | grep -q 'libmuve.so'; then
+    echo "btOnly no deberia traer muve" >&2
+    exit 1
+fi
+echo "OK: full trae libmuve.so, btOnly no"

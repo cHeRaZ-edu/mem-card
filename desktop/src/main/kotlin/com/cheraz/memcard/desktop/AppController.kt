@@ -11,6 +11,7 @@ import com.cheraz.memcard.core.history.SaveVersion
 import com.cheraz.memcard.core.sync.CommitOutcome
 import com.cheraz.memcard.core.sync.GameLink
 import com.cheraz.memcard.core.sync.GameState
+import com.cheraz.memcard.core.sync.MuveCli
 import com.cheraz.memcard.core.sync.SyncEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,7 +56,7 @@ class AppController(private val store: SettingsStore = SettingsStore()) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val io = Dispatchers.IO.limitedParallelism(1)
-    val muve = MuveCli({ settings }, File(AppPaths.home, "muve"))
+    val muve = MuveCli({ settings.toMuveConfig() }, File(AppPaths.home, "muve"))
     private var engine = newEngine()
     private val dirty = ConcurrentHashMap<String, Long>()
     private val watcher = FolderWatcher { id -> dirty[id] = System.currentTimeMillis() }
@@ -103,14 +104,14 @@ class AppController(private val store: SettingsStore = SettingsStore()) {
     // ---------- juegos ----------
 
     fun addGame(name: String, folder: File) {
-        val link = engine.createGame(name, folder)
+        val link = engine.createGame(name, folder.absolutePath)
         saveLink(link)
         watcher.watch(link.gameId, folder)
         note("Juego agregado: ${link.name}. Se sube en cuanto lo guardes (o con «Subir ahora»).")
     }
 
     fun linkFromCloud(manifest: GameManifest, folder: File) {
-        val link = engine.linkFromCloud(manifest, folder)
+        val link = engine.linkFromCloud(manifest, folder.absolutePath)
         saveLink(link)
         watcher.watch(link.gameId, folder)
         refresh(link.gameId)

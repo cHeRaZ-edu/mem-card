@@ -1,8 +1,5 @@
-package com.cheraz.memcard.desktop
+package com.cheraz.memcard.core.sync
 
-import com.cheraz.memcard.core.sync.CommitOutcome
-import com.cheraz.memcard.core.sync.DriveConflictException
-import com.cheraz.memcard.core.sync.SyncEngine
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.AfterTest
@@ -34,7 +31,7 @@ class MuveCliTest {
     }
 
     private fun cli(name: String) = MuveCli(
-        { AppSettings(server = "https://x.test/api", apiKey = "k", device = name, muvePath = script.absolutePath) },
+        { MuveCli.MuveConfig(script.absolutePath, "https://x.test/api", "k", env = mapOf("MEMCARD_TEST" to name)) },
         File(tmp, "work-$name"),
     )
 

@@ -37,7 +37,7 @@ jobs:
         run: sh scripts/check-manifests.sh
 
       - name: Pruebas unitarias de la app
-        run: ./gradlew :app:testBtOnlyDebugUnitTest --stacktrace
+        run: bash scripts/gradle-annotate.sh :app:testBtOnlyDebugUnitTest :app:testFullDebugUnitTest --stacktrace
 
       - uses: actions/upload-artifact@v4
         with:

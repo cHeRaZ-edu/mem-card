@@ -14,6 +14,10 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+// Atajos para las pruebas: carpetas normales.
+fun SyncEngine.createGame(name: String, folder: File) = createGame(name, folder.absolutePath)
+fun SyncEngine.linkFromCloud(m: GameManifest, folder: File) = linkFromCloud(m, folder.absolutePath)
+
 /** Drive en memoria con la misma semantica que el API: versiones por archivo y 409 con expected_version. */
 class FakeDrive : DriveStore {
     val files = HashMap<String, Pair<ByteArray, Int>>()

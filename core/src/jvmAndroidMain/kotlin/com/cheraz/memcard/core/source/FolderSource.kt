@@ -7,7 +7,11 @@ import java.io.InputStream
 import java.util.zip.ZipFile
 
 /** Un save que vive en una carpeta normal (desktop, o rutas directas en Android). */
-class FolderSource(private val root: File) : SaveSource, SaveSink {
+class FolderSource(private val root: File) : SaveFolder {
+
+    override fun ensureExists() {
+        root.mkdirs()
+    }
 
     override fun list(): List<SaveFile> {
         if (!root.isDirectory) throw java.io.FileNotFoundException("No existe la carpeta ${root.path}")
