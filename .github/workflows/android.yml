@@ -71,6 +71,8 @@ jobs:
 
       - name: App portable (carpeta con Java incluido)
         shell: bash
+        env:
+          MEMCARD_PACKAGING_JDK: ${{ env.JAVA_HOME_21_X64 }}
         run: bash scripts/gradle-annotate.sh :desktop:createDistributable --stacktrace
 
       - name: Zip

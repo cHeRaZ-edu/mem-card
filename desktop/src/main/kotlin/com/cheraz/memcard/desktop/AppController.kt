@@ -164,7 +164,9 @@ class AppController(private val store: SettingsStore = SettingsStore()) {
         null
     }
 
-    fun skipLabel(gameId: String) = update(gameId) { it.copy(askLabel = null) }
+    fun skipLabel(gameId: String) {
+        games[gameId]?.let { games[gameId] = it.copy(askLabel = null) }
+    }
 
     fun acceptFork() {
         val ask = forkAsk ?: return

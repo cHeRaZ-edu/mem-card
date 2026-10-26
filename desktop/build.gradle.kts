@@ -32,6 +32,8 @@ dependencies {
 compose.desktop {
     application {
         mainClass = "com.cheraz.memcard.desktop.MainKt"
+        // JDK con el que se arma el runtime incluido (jlink). El CI pasa uno LTS; si no, el de Gradle.
+        System.getenv("MEMCARD_PACKAGING_JDK")?.takeIf { it.isNotBlank() }?.let { javaHome = it }
 
         nativeDistributions {
             // El CI usa createDistributable (carpeta portable con Java incluido); Msi queda por si luego se quiere instalador.
