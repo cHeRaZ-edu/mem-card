@@ -66,7 +66,7 @@ class MuveCliTest {
         File(lapDir, "DATA.BIN").writeText("slot 2")
         assertIs<CommitOutcome.Uploaded>(lap.commit(link))
         assertEquals(2, pc.readManifest(up.link.gameId)!!.version)
-        assertTrue(engine.state(up.link).newer.isNotEmpty())
+        assertTrue(engine.state(up.link).newer != null)
     }
 
     @Test

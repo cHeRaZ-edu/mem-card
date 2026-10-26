@@ -1,7 +1,7 @@
 package com.cheraz.memcard.core.sync
 
 import com.cheraz.memcard.core.history.GameManifest
-import com.cheraz.memcard.core.history.History
+import com.cheraz.memcard.core.history.Partida
 import com.cheraz.memcard.core.history.SaveVersion
 import com.cheraz.memcard.core.history.Ulid
 import java.io.File
@@ -51,7 +51,7 @@ class FakeDrive : DriveStore {
     }
 
     override fun listGameIds(): List<String> =
-        files.keys.filter { it.startsWith("heads/") }.map { it.removePrefix("heads/").removeSuffix(".json") }
+        files.keys.filter { it.startsWith("games/") }.map { it.removePrefix("games/").removeSuffix(".json") }
 }
 
 class SyncEngineTest {
@@ -72,126 +72,187 @@ class SyncEngineTest {
         File(this, path).apply { parentFile.mkdirs() }.writeText(text)
     }
 
-    @Test
-    fun firstCommitCreatesManifestAndUnchangedSkips() {
+    private fun File.read(path: String) = File(this, path).readText()
+
+    private fun manifest(gameId: String) = drive.readManifest(gameId)!!.manifest
+
+    private fun uploaded(o: CommitOutcome): CommitOutcome.Uploaded {
+        assertIs<CommitOutcome.Uploaded>(o)
+        return o
+    }
+
+    /** PC crea el juego y sube; la laptop lo enlaza y carga la partida. */
+    private fun twoDevices(): Triple<GameLink, GameLink, Pair<SyncEngine, SyncEngine>> {
         val pc = device("pc")
-        val dir = folder("pc").apply { put("SAVEDATA/ULUS1/DATA.BIN", "slot1") }
-        var link = pc.createGame("MHFU", dir)
-
-        val first = pc.commit(link, label = "primer save")
-        assertIs<CommitOutcome.Uploaded>(first)
-        link = first.link
-        assertEquals("primer save", first.version.label)
-        assertEquals(1, drive.readManifest(link.gameId)!!.manifest.versions.size)
-
-        assertIs<CommitOutcome.Unchanged>(pc.commit(link))
-
-        dir.put("SAVEDATA/ULUS1/DATA.BIN", "slot1 mas avanzado")
-        val second = pc.commit(link)
-        assertIs<CommitOutcome.Uploaded>(second)
-        assertEquals(link.head, second.version.parent)
-        assertEquals(2, drive.uploads)
+        val lap = device("lap")
+        val pcLink = uploaded(pc.commit(pc.createGame("RE3", folder("pc").apply { put("a.sav", "base") }))).link
+        var lapLink = lap.linkFromCloud(lap.listCloudGames().single(), folder("lap"))
+        lapLink = lap.switchPartida(lapLink, pcLink.partida!!)
+        return Triple(pcLink, lapLink, pc to lap)
     }
 
     @Test
-    fun otherDeviceSeesNewerAndRestores() {
+    fun firstCommitCreatesDefaultPartidaAndVersionsGoInLine() {
         val pc = device("pc")
-        val switch = device("switch")
-        val pcDir = folder("pc").apply { put("a.sav", "v1") }
-        var pcLink = (pc.commit(pc.createGame("RE4", pcDir)) as CommitOutcome.Uploaded).link
+        val dir = folder("pc").apply { put("SAVEDATA/DATA.BIN", "slot1") }
+        val first = uploaded(pc.commit(pc.createGame("MHFU", dir), label = "primer save"))
+        assertEquals(SyncEngine.DEFAULT_PARTIDA, first.newPartida!!.name)
+        assertEquals("primer save", first.version.label)
+        var link = first.link
+        assertEquals(first.newPartida!!.id, link.partida)
 
-        val cloud = switch.listCloudGames().single()
-        val swDir = folder("switch")
-        var swLink = switch.linkFromCloud(cloud, swDir)
-        val st = switch.state(swLink)
-        assertNull(st.head)
-        assertEquals(1, st.otherPaths.size)
+        assertIs<CommitOutcome.Unchanged>(pc.commit(link))
 
-        swLink = switch.restore(swLink, st.otherPaths.first().id)
-        assertEquals("v1", File(swDir, "a.sav").readText())
-        swDir.put("a.sav", "v2 krauser")
-        swLink = (switch.commit(swLink) as CommitOutcome.Uploaded).link
+        dir.put("SAVEDATA/DATA.BIN", "slot1 mas avanzado")
+        val second = uploaded(pc.commit(link))
+        assertNull(second.newPartida)
+        assertEquals(link.head, second.version.parent)
+        assertEquals(link.partida, second.version.partida)
+        link = second.link
+        val m = manifest(link.gameId)
+        assertEquals(1, m.partidas.size)
+        assertEquals(link.head, m.tipOf(link.partida!!)!!.id)
+    }
 
-        val pcState = pc.state(pcLink)
-        assertEquals(listOf(swLink.head), pcState.newer.map { it.id })
-        assertEquals(false, pcState.localChanged)
+    @Test
+    fun otherDeviceLoadsPartidaAndSeesNewer() {
+        val (pcStart, lapStart, engines) = twoDevices()
+        val (pc, lap) = engines
+        assertEquals("base", folder("lap").read("a.sav"))
+        assertEquals(pcStart.partida, lapStart.partida)
 
-        pcLink = pc.restore(pcLink, pcState.newer.first().id)
-        assertEquals("v2 krauser", File(pcDir, "a.sav").readText())
-        assertEquals(swLink.head, pcLink.head)
+        folder("lap").put("a.sav", "nemesis 1")
+        val lapLink = uploaded(lap.commit(lapStart)).link
+
+        val st = pc.state(pcStart)
+        assertEquals(lapLink.head, st.newer?.id)
+        assertEquals(false, st.localChanged)
+        val pcLink = pc.restore(pcStart, st.newer!!.id)
+        assertEquals("nemesis 1", folder("pc").read("a.sav"))
         assertTrue(pc.backupDir(pcLink.gameId).listFiles()!!.isNotEmpty(), "debe quedar respaldo")
     }
 
     @Test
-    fun playingOldVersionAsksForForkAndDeclineKeepsLocal() {
-        val pc = device("pc")
-        val lap = device("lap")
-        val pcDir = folder("pc").apply { put("a.sav", "base") }
-        var pcLink = (pc.commit(pc.createGame("RE3", pcDir)) as CommitOutcome.Uploaded).link
+    fun savingOnTopOfAdvancedPartidaAsksForNewPartida() {
+        val (pcLink, lapStart, engines) = twoDevices()
+        val (pc, lap) = engines
+        folder("lap").put("a.sav", "laptop avanzo")
+        uploaded(lap.commit(lapStart))
 
-        var lapLink = lap.linkFromCloud(lap.listCloudGames().single(), folder("lap"))
-        lapLink = lap.restore(lapLink, pcLink.head!!)
-        File(lapLink.folder, "a.sav").writeText("nemesis 1")
-        lapLink = (lap.commit(lapLink) as CommitOutcome.Uploaded).link
-
-        // La PC siguio jugando desde "base" sin bajar lo de la laptop: abriria otro camino.
-        pcDir.put("a.sav", "otra ruta")
+        folder("pc").put("a.sav", "la pc tambien jugo")
         val ask = pc.commit(pcLink)
-        assertIs<CommitOutcome.NeedsFork>(ask)
-        pcLink = pc.declinePending(ask.link)
+        assertIs<CommitOutcome.NeedsPartida>(ask)
+        assertEquals("lap", ask.tip!!.device)
 
-        pcDir.put("a.sav", "otra ruta, mas avanzada")
-        val kept = pc.commit(pcLink)
-        assertIs<CommitOutcome.KeptLocal>(kept)
-        pcLink = kept.link
-        assertEquals(2, drive.readManifest(pcLink.gameId)!!.manifest.versions.size, "no se subio nada")
+        val up = uploaded(pc.uploadPendingAsNew(ask.link, "Ruta PC"))
+        assertEquals("Ruta PC", up.newPartida!!.name)
+        assertEquals(pcLink.head, up.version.parent, "la partida nueva recuerda de donde salio")
+        val m = manifest(pcLink.gameId)
+        assertEquals(2, m.partidas.size)
+        m.partidas.forEach { p -> assertEquals(m.versionsOf(p.id).size, m.versionsOf(p.id).map { it.id }.toSet().size) }
 
-        val up = pc.commit(pcLink, allowFork = true)
-        assertIs<CommitOutcome.Uploaded>(up)
-        val m = drive.readManifest(pcLink.gameId)!!.manifest
-        assertEquals(2, History(m.versions).tips().size)
         val st = pc.state(up.link)
-        assertEquals(listOf(lapLink.head), st.otherPaths.map { it.id })
-        assertTrue(st.newer.isEmpty())
+        assertEquals("Ruta PC", st.current!!.partida.name)
+        assertEquals(2, st.partidas.size)
+        assertNull(st.newer)
     }
 
     @Test
-    fun conflictIsMergedAndRetried() {
+    fun declineKeepsLocalWithoutAskingAgain() {
+        val (pcLink, lapStart, engines) = twoDevices()
+        val (pc, lap) = engines
+        folder("lap").put("a.sav", "x")
+        uploaded(lap.commit(lapStart))
+
+        folder("pc").put("a.sav", "y")
+        val ask = pc.commit(pcLink)
+        assertIs<CommitOutcome.NeedsPartida>(ask)
+        var link = pc.declinePending(ask.link)
+        folder("pc").put("a.sav", "y mas")
+        val kept = pc.commit(link)
+        assertIs<CommitOutcome.KeptLocal>(kept)
+        link = kept.link
+        assertEquals(2, manifest(link.gameId).versions.size, "no se subio nada")
+    }
+
+    @Test
+    fun oldVersionFromHistoryThenSaveAsks() {
         val pc = device("pc")
-        val dir = folder("pc").apply { put("a.sav", "1") }
-        val link = (pc.commit(pc.createGame("DS", dir)) as CommitOutcome.Uploaded).link
-
-        // Justo antes de que la PC escriba, otro dispositivo agrega una etiqueta (gana la carrera).
-        drive.beforeManifestWrite = {
-            val cur = drive.readManifest(link.gameId)!!
-            drive.writeManifest(link.gameId, cur.manifest.withLabel(link.head!!, "de otro lado", 5), cur.version)
-        }
-        dir.put("a.sav", "2")
-        val res = pc.commit(link)
-        assertIs<CommitOutcome.Uploaded>(res)
-        val m = drive.readManifest(link.gameId)!!.manifest
-        assertEquals(2, m.versions.size)
-        assertEquals("de otro lado", m.find(link.head)!!.label)
+        val dir = folder("pc").apply { put("a", "1") }
+        var link = uploaded(pc.commit(pc.createGame("FF", dir))).link
+        val v1 = link.head!!
+        dir.put("a", "2")
+        link = uploaded(pc.commit(link)).link
+        link = pc.restore(link, v1)
+        assertEquals("1", dir.read("a"))
+        dir.put("a", "1 otra ruta")
+        assertIs<CommitOutcome.NeedsPartida>(pc.commit(link))
     }
 
     @Test
-    fun linkingToCloudWithLocalSaveAsksBeforeNewPath() {
+    fun newPartidaFromCurrentEvenWithoutChanges() {
+        val pc = device("pc")
+        val dir = folder("pc").apply { put("a", "1") }
+        val link = uploaded(pc.commit(pc.createGame("FF", dir))).link
+        val copy = uploaded(pc.commit(link, newPartidaName = "Antes del jefe"))
+        assertEquals("Antes del jefe", copy.newPartida!!.name)
+        assertEquals(link.headHash, copy.version.hash)
+        assertEquals(2, manifest(link.gameId).partidas.size)
+    }
+
+    @Test
+    fun switchPartidaLoadsItsLatestVersion() {
+        val pc = device("pc")
+        val dir = folder("pc").apply { put("a", "cazador") }
+        var link = uploaded(pc.commit(pc.createGame("MHXX", dir))).link
+        val cazador = link.partida!!
+        dir.put("a", "cuenta recuperada")
+        link = uploaded(pc.commit(link, newPartidaName = "Cuenta recuperada")).link
+        link = pc.switchPartida(link, cazador)
+        assertEquals("cazador", dir.read("a"))
+        assertEquals(cazador, link.partida)
+        assertIs<CommitOutcome.Unchanged>(pc.commit(link))
+    }
+
+    @Test
+    fun raceOnSamePartidaBecomesQuestion() {
+        val (pcLink, lapStart, engines) = twoDevices()
+        val (pc, lap) = engines
+        // Justo antes de que la PC escriba, la laptop sube a la misma partida.
+        drive.beforeManifestWrite = {
+            folder("lap").put("a.sav", "laptop gano")
+            uploaded(lap.commit(lapStart))
+        }
+        folder("pc").put("a.sav", "pc")
+        val res = pc.commit(pcLink)
+        assertIs<CommitOutcome.NeedsPartida>(res)
+        assertEquals("lap", res.tip!!.device)
+    }
+
+    @Test
+    fun linkingWithLocalSaveAsksBeforeUploading() {
         val pc = device("pc")
         val lap = device("lap")
-        val link = (pc.commit(pc.createGame("FF", folder("pc").apply { put("a", "x") })) as CommitOutcome.Uploaded).link
-        val lapDir = folder("lap").apply { put("a", "algo distinto") }
-        val lapLink = lap.linkFromCloud(lap.listCloudGames().single(), lapDir)
-        assertIs<CommitOutcome.NeedsFork>(lap.commit(lapLink))
-        assertEquals(link.gameId, lapLink.gameId)
+        uploaded(pc.commit(pc.createGame("FF", folder("pc").apply { put("a", "x") })))
+        val lapLink = lap.linkFromCloud(lap.listCloudGames().single(), folder("lap").apply { put("a", "algo distinto") })
+        val res = lap.commit(lapLink)
+        assertIs<CommitOutcome.NeedsPartida>(res)
+        assertNull(res.tip)
     }
 
     @Test
-    fun manifestMergeKeepsNewestLabel() {
-        val v = SaveVersion("A", null, "h", 1, 1, 1, "pc", 1)
-        val a = GameManifest(gameId = "g", name = "x", versions = listOf(v.copy(label = "viejo", labelAt = 1)))
-        val b = GameManifest(gameId = "g", name = "y", nameAt = 3, versions = listOf(v.copy(label = "nuevo", labelAt = 2), v.copy(id = "B", parent = "A", createdAt = 2)))
+    fun manifestMergeKeepsNewestLabelAndName() {
+        val v = SaveVersion("A", "P", null, "h", 1, 1, 1, "pc", 1)
+        val p = Partida("P", "vieja", 1, 1, "pc")
+        val a = GameManifest(gameId = "g", name = "x", partidas = listOf(p), versions = listOf(v.copy(label = "viejo", labelAt = 1)))
+        val b = GameManifest(
+            gameId = "g", name = "y", nameAt = 3,
+            partidas = listOf(p.copy(name = "nueva", nameAt = 5)),
+            versions = listOf(v.copy(label = "nuevo", labelAt = 2), v.copy(id = "B", parent = "A", createdAt = 2)),
+        )
         val m = GameManifest.merge(a, b)!!
         assertEquals("nuevo", m.find("A")!!.label)
+        assertEquals("nueva", m.partida("P")!!.name)
         assertEquals("y", m.name)
         assertEquals(listOf("A", "B"), m.versions.map { it.id })
         assertEquals(m, GameManifest.fromJson(m.toJson()))

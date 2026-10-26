@@ -29,7 +29,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -41,8 +43,12 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogWindow
 import androidx.compose.ui.window.rememberDialogState
+import com.cheraz.memcard.core.app.GameUi
+import com.cheraz.memcard.core.app.PartidaAsk
+import com.cheraz.memcard.core.app.SyncController
+import com.cheraz.memcard.core.app.SyncController.Companion.describe
+import com.cheraz.memcard.core.app.SyncController.Companion.time
 import com.cheraz.memcard.core.history.GameManifest
-import com.cheraz.memcard.core.history.History
 import com.cheraz.memcard.core.history.SaveVersion
 import java.io.File
 import javax.swing.JFileChooser
@@ -52,7 +58,10 @@ fun App(c: AppController) {
     var showSettings by remember { mutableStateOf(!c.settings.configured) }
     var showAdd by remember { mutableStateOf(false) }
     var showCloud by remember { mutableStateOf(false) }
-    var historyFor by remember { mutableStateOf<String?>(null) }
+    var partidasFor by remember { mutableStateOf<String?>(null) }
+    val games by c.sync.games.collectAsState()
+    val ask by c.sync.ask.collectAsState()
+    val log by c.sync.log.collectAsState()
 
     Surface(Modifier.fillMaxSize()) {
         Column(Modifier.padding(16.dp)) {
@@ -72,7 +81,7 @@ fun App(c: AppController) {
             }
             Spacer(Modifier.height(12.dp))
 
-            val list = c.games.values.sortedBy { it.link.name.lowercase() }
+            val list = games.values.sortedBy { it.link.name.lowercase() }
             Box(Modifier.weight(1f)) {
                 if (list.isEmpty()) {
                     Text(
@@ -82,14 +91,14 @@ fun App(c: AppController) {
                     )
                 }
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    items(list, key = { it.link.gameId }) { g -> GameCard(c, g, onHistory = { historyFor = g.link.gameId }) }
+                    items(list, key = { it.link.gameId }) { g -> GameCard(c, g, onPartidas = { partidasFor = g.link.gameId }) }
                 }
             }
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             SelectionContainer {
                 Column(Modifier.heightIn(max = 110.dp)) {
-                    c.log.take(5).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    log.take(5).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
                 }
             }
         }
@@ -98,80 +107,85 @@ fun App(c: AppController) {
     if (showSettings) SettingsDialog(c) { showSettings = false }
     if (showAdd) AddGameDialog(c) { showAdd = false }
     if (showCloud) CloudDialog(c) { showCloud = false }
-    historyFor?.let { id -> HistoryWindow(c, id) { historyFor = null } }
-    c.forkAsk?.let { ask ->
-        AlertDialog(
-            onDismissRequest = {},
-            title = { Text("¿Crear otro camino?") },
-            text = {
-                Text(
-                    "${ask.name}: guardaste partiendo de una version que ya no es la ultima en la nube " +
-                        "(otro equipo subio algo despues, o la tomaste del historial).\n\n" +
-                        "Si creas otro camino se suben las dos y puedes cambiar entre ellas en el historial. " +
-                        "Si no, esta partida se queda solo en este equipo.",
-                )
-            },
-            confirmButton = { Button(onClick = { c.acceptFork() }) { Text("Crear camino") } },
-            dismissButton = { TextButton(onClick = { c.declineFork() }) { Text("Dejarla local") } },
-        )
+    partidasFor?.let { id -> PartidasWindow(c, id) { partidasFor = null } }
+    ask?.let { AskDialog(c.sync, it) }
+}
+
+/** ¿Lo que guardaste es una partida nueva? */
+@Composable
+fun AskDialog(sync: SyncController, ask: PartidaAsk) {
+    var name by remember(ask.version.id) { mutableStateOf("") }
+    val why = when {
+        ask.tip == null -> "En la nube ya hay partidas de «${ask.gameName}» y en este equipo aun no eliges una."
+        else -> "La partida «${ask.currentPartida ?: "?"}» siguio en otro lado o cargaste una version vieja: " +
+            "la ultima es ${describe(ask.tip)}."
     }
+    AlertDialog(
+        onDismissRequest = {},
+        title = { Text("¿Es una partida nueva?") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("$why\n\nPara no pisar nada, guarda lo tuyo como partida nueva. Si no, se queda solo en este equipo.")
+                OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Nombre de la partida nueva") })
+            }
+        },
+        confirmButton = { Button(onClick = { sync.answerAsk(name) }, enabled = name.isNotBlank()) { Text("Guardar como partida nueva") } },
+        dismissButton = { TextButton(onClick = { sync.answerAsk(null) }) { Text("Dejarla solo aqui") } },
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun GameCard(c: AppController, g: GameUi, onHistory: () -> Unit) {
+private fun GameCard(c: AppController, g: GameUi, onPartidas: () -> Unit) {
     val link = g.link
     val st = g.state
-    var confirmRestore by remember { mutableStateOf<SaveVersion?>(null) }
+    val sync = c.sync
+    var confirm by remember { mutableStateOf<SaveVersion?>(null) }
+    val err = MaterialTheme.colorScheme.error
 
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(link.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text(link.folder, style = MaterialTheme.typography.bodySmall)
-
-            val err = MaterialTheme.colorScheme.error
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(link.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(link.folder, style = MaterialTheme.typography.bodySmall)
+                }
+                OutlinedButton(onClick = onPartidas) {
+                    Text("Partida: ${st?.current?.partida?.name ?: "sin elegir"}")
+                }
+            }
             when {
                 g.busy != null -> Text("⏳ ${g.busy}…")
-                g.error != null -> Text(g.error, color = err)
+                g.error != null -> Text(g.error!!, color = err)
                 st == null -> Text("Sin revisar todavia")
                 st.localError != null -> Text("No se pudo leer la carpeta: ${st.localError}", color = err)
-                st.head == null && st.otherPaths.isNotEmpty() -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("En la nube ya hay partidas. Baja una antes de jugar, o sube la tuya como otro camino.", Modifier.weight(1f))
-                    Button(onClick = { confirmRestore = st.otherPaths.first() }) { Text("Bajar la mas reciente") }
+                st.current == null && st.partidas.isNotEmpty() -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("En la nube hay ${st.partidas.size} partida(s). Elige cual cargar antes de jugar.", Modifier.weight(1f))
+                    Button(onClick = onPartidas) { Text("Elegir partida") }
                 }
-                st.head == null -> Text("Aun no se ha subido. Juega y guarda, o usa «Subir ahora».")
-                st.newer.isNotEmpty() -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    val v = st.newer.first()
-                    Text("Hay una version mas nueva: ${AppController.describe(v)}", Modifier.weight(1f), color = MaterialTheme.colorScheme.primary)
-                    Button(onClick = { confirmRestore = v }) { Text("Bajar") }
+                st.current == null -> Text("Aun no se ha subido. Juega y guarda, o usa «Subir ahora».")
+                st.newer != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Esta partida avanzo en otro equipo: ${describe(st.newer)}", Modifier.weight(1f), color = MaterialTheme.colorScheme.primary)
+                    Button(onClick = { confirm = st.newer }) { Text("Bajar") }
                 }
-                else -> Text("Al dia · ${AppController.describe(st.head)}")
+                else -> Text("Al dia · ${describe(st.head)}")
             }
             if (st?.localChanged == true && st.head != null && g.busy == null) {
                 Text("Hay cambios en la carpeta sin subir.", style = MaterialTheme.typography.bodySmall)
             }
-            link.pending?.let { p ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Partida solo en este equipo (${AppController.describeTime(p.createdAt)}).", Modifier.weight(1f))
-                    OutlinedButton(onClick = { c.uploadNow(link.gameId, allowFork = true) }) { Text("Subir como camino nuevo") }
-                }
-            }
-            if (st != null && st.head != null && st.otherPaths.isNotEmpty()) {
-                Text("Hay ${st.otherPaths.size} camino(s) mas en el historial.", style = MaterialTheme.typography.bodySmall)
-            }
+            link.pending?.let { p -> Text("Hay una partida guardada solo en este equipo (${time(p.createdAt)}). Puedes subirla desde «Partida».") }
 
-            g.askLabel?.let { v -> LabelRow(c, link.gameId, v) }
+            g.askLabel?.let { v -> LabelRow(sync, link.gameId, v) }
 
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { c.uploadNow(link.gameId) }, enabled = g.busy == null) { Text("Subir ahora") }
-                OutlinedButton(onClick = { c.refresh(link.gameId) }, enabled = g.busy == null) { Text("Revisar nube") }
-                OutlinedButton(onClick = onHistory) { Text("Historial") }
+                Button(onClick = { sync.uploadNow(link.gameId) }, enabled = g.busy == null) { Text("Subir ahora") }
+                OutlinedButton(onClick = { sync.refresh(link.gameId) }, enabled = g.busy == null) { Text("Revisar nube") }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(link.autoUpload, { c.setAuto(link.gameId, upload = it) })
+                    Checkbox(link.autoUpload, { sync.setAuto(link.gameId, upload = it) })
                     Text("Subir solo")
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(link.autoDownload, { c.setAuto(link.gameId, download = it) })
+                    Checkbox(link.autoDownload, { sync.setAuto(link.gameId, download = it) })
                     Text("Bajar solo")
                 }
                 TextButton(onClick = { c.removeGame(link.gameId) }) { Text("Quitar de este equipo") }
@@ -179,103 +193,139 @@ private fun GameCard(c: AppController, g: GameUi, onHistory: () -> Unit) {
         }
     }
 
-    confirmRestore?.let { v ->
-        RestoreConfirm(v, onYes = { c.restore(link.gameId, v.id); confirmRestore = null }, onNo = { confirmRestore = null })
-    }
+    confirm?.let { v -> LoadConfirm(v, onYes = { sync.restore(link.gameId, v.id); confirm = null }, onNo = { confirm = null }) }
 }
 
 @Composable
-private fun LabelRow(c: AppController, gameId: String, v: SaveVersion) {
+private fun LabelRow(sync: SyncController, gameId: String, v: SaveVersion) {
     var text by remember(v.id) { mutableStateOf(v.label) }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(
-            text,
-            { text = it },
-            Modifier.weight(1f),
-            label = { Text("¿Que paso en esta sesion?") },
-            singleLine = true,
-        )
-        Button(onClick = { c.setLabel(gameId, v.id, text) }, enabled = text.isNotBlank()) { Text("Guardar") }
-        TextButton(onClick = { c.skipLabel(gameId) }) { Text("Omitir") }
+        OutlinedTextField(text, { text = it }, Modifier.weight(1f), label = { Text("¿Que paso en esta sesion?") }, singleLine = true)
+        Button(onClick = { sync.setLabel(gameId, v.id, text) }, enabled = text.isNotBlank()) { Text("Guardar") }
+        TextButton(onClick = { sync.skipLabel(gameId) }) { Text("Omitir") }
     }
 }
 
 @Composable
-private fun RestoreConfirm(v: SaveVersion, onYes: () -> Unit, onNo: () -> Unit) {
+private fun LoadConfirm(v: SaveVersion, onYes: () -> Unit, onNo: () -> Unit) {
     AlertDialog(
         onDismissRequest = onNo,
-        title = { Text("¿Restaurar esta partida?") },
-        text = {
-            Text(
-                "${AppController.describe(v)}\n\nCierra el emulador antes. Lo que hay ahora en la carpeta " +
-                    "se guarda como respaldo antes de reemplazarlo.",
-            )
-        },
-        confirmButton = { Button(onClick = onYes) { Text("Restaurar") } },
+        title = { Text("¿Cargar esta version?") },
+        text = { Text("${describe(v)}\n\nCierra el emulador antes. Lo que hay ahora en la carpeta se guarda como respaldo.") },
+        confirmButton = { Button(onClick = onYes) { Text("Cargar") } },
         dismissButton = { TextButton(onClick = onNo) { Text("Cancelar") } },
     )
 }
 
+/** Partidas del juego: cambiar la partida en curso, renombrar, crear una nueva y ver su historial. */
 @Composable
-private fun HistoryWindow(c: AppController, gameId: String, onClose: () -> Unit) {
-    val g = c.games[gameId] ?: return onClose()
-    val manifest = remember(g.state) { c.manifest(gameId) }
+private fun PartidasWindow(c: AppController, gameId: String, onClose: () -> Unit) {
+    val games by c.sync.games.collectAsState()
+    val g = games[gameId] ?: return onClose()
+    val sync = c.sync
+    val manifest = remember(g.state) { sync.manifest(gameId) }
     var confirm by remember { mutableStateOf<SaveVersion?>(null) }
-    var editing by remember { mutableStateOf<String?>(null) }
+    var switchTo by remember { mutableStateOf<String?>(null) }
+    var renaming by remember { mutableStateOf<String?>(null) }
+    var newName by remember { mutableStateOf("") }
+    var openHistory by remember { mutableStateOf(g.link.partida) }
 
-    DialogWindow(
-        onCloseRequest = onClose,
-        title = "Historial · ${g.link.name}",
-        state = rememberDialogState(size = DpSize(760.dp, 620.dp)),
-    ) {
+    DialogWindow(onCloseRequest = onClose, title = "Partidas · ${g.link.name}", state = rememberDialogState(size = DpSize(780.dp, 680.dp))) {
         Surface(Modifier.fillMaxSize()) {
-            val versions = manifest?.versions.orEmpty().sortedByDescending { it.createdAt }
-            if (versions.isEmpty()) {
-                Text("Todavia no hay versiones en la nube.", Modifier.padding(24.dp))
-                return@Surface
-            }
-            val history = History(manifest!!.versions)
-            val tips = history.tips().map { it.id }.toSet()
-            val head = g.link.head
-            LazyColumn(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(versions, key = { it.id }) { v ->
-                    val tags = buildList {
-                        if (v.id == head) add("actual")
-                        if (v.id in tips) add("punta")
-                        if (head != null && !history.isAncestorOrSelf(v.id, head) && !history.isAncestorOrSelf(head, v.id)) add("otro camino")
-                    }
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    "${AppController.describeTime(v.createdAt)} · ${v.device}",
-                                    Modifier.weight(1f),
-                                    fontWeight = if (v.id == head) FontWeight.Bold else FontWeight.Normal,
-                                )
-                                if (tags.isNotEmpty()) Text(tags.joinToString(" · "), color = MaterialTheme.colorScheme.primary)
-                            }
-                            Text("${v.files} archivo(s), ${human(v.bytes)}", style = MaterialTheme.typography.bodySmall)
-                            if (editing == v.id) {
-                                var text by remember(v.id) { mutableStateOf(v.label) }
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedTextField(text, { text = it }, Modifier.weight(1f), singleLine = true, label = { Text("Etiqueta") })
-                                    Button(onClick = { c.setLabel(gameId, v.id, text); editing = null }) { Text("Guardar") }
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (g.busy != null) Text("⏳ ${g.busy}…")
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(newName, { newName = it }, Modifier.weight(1f), singleLine = true, label = { Text("Nueva partida con lo que hay en la carpeta") })
+                    Button(onClick = { sync.newPartida(gameId, newName); newName = "" }, enabled = newName.isNotBlank() && g.busy == null) { Text("Crear") }
+                }
+                val partidas = g.state?.partidas.orEmpty()
+                if (partidas.isEmpty()) Text("Todavia no hay partidas en la nube. Se crea «Principal» al subir por primera vez.")
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(partidas, key = { it.partida.id }) { info ->
+                        val p = info.partida
+                        val isCurrent = p.id == g.link.partida
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(p.name + if (isCurrent) "  · en curso" else "", Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                                    Text("${info.count} version(es)", style = MaterialTheme.typography.bodySmall)
                                 }
-                            } else if (v.label.isNotBlank()) {
-                                Text("“${v.label}”")
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedButton(onClick = { confirm = v }, enabled = v.id != head && g.busy == null) { Text("Restaurar") }
-                                TextButton(onClick = { editing = if (editing == v.id) null else v.id }) { Text("Etiqueta") }
+                                Text("Ultima: ${describe(info.tip)}", style = MaterialTheme.typography.bodySmall)
+                                if (renaming == p.id) {
+                                    var text by remember(p.id) { mutableStateOf(p.name) }
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedTextField(text, { text = it }, Modifier.weight(1f), singleLine = true, label = { Text("Nombre") })
+                                        Button(onClick = { sync.renamePartida(gameId, p.id, text); renaming = null }, enabled = text.isNotBlank()) { Text("Guardar") }
+                                    }
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (!isCurrent) Button(onClick = { switchTo = p.id }, enabled = g.busy == null) { Text("Jugar esta") }
+                                    TextButton(onClick = { renaming = if (renaming == p.id) null else p.id }) { Text("Renombrar") }
+                                    TextButton(onClick = { openHistory = if (openHistory == p.id) null else p.id }) {
+                                        Text(if (openHistory == p.id) "Ocultar historial" else "Historial")
+                                    }
+                                }
+                                if (openHistory == p.id && manifest != null) {
+                                    VersionList(sync, gameId, manifest, p.id, g.link.head, g.busy == null) { confirm = it }
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        confirm?.let { v ->
-            RestoreConfirm(v, onYes = { c.restore(gameId, v.id); confirm = null }, onNo = { confirm = null })
+        confirm?.let { v -> LoadConfirm(v, onYes = { sync.restore(gameId, v.id); confirm = null }, onNo = { confirm = null }) }
+        switchTo?.let { pid ->
+            AlertDialog(
+                onDismissRequest = { switchTo = null },
+                title = { Text("¿Cambiar de partida?") },
+                text = {
+                    Text(
+                        "Se sube lo que hayas guardado en la partida actual y se carga la ultima version de " +
+                            "«${manifest?.partida(pid)?.name}». Cierra el emulador antes.",
+                    )
+                },
+                confirmButton = { Button(onClick = { sync.switchPartida(gameId, pid); switchTo = null }) { Text("Cambiar") } },
+                dismissButton = { TextButton(onClick = { switchTo = null }) { Text("Cancelar") } },
+            )
         }
+    }
+}
+
+@Composable
+private fun VersionList(
+    sync: SyncController,
+    gameId: String,
+    manifest: GameManifest,
+    partidaId: String,
+    head: String?,
+    enabled: Boolean,
+    onLoad: (SaveVersion) -> Unit,
+) {
+    var editing by remember { mutableStateOf<String?>(null) }
+    Column(Modifier.padding(start = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        manifest.versionsOf(partidaId).asReversed().forEach { v -> key(v.id) {
+            HorizontalDivider()
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "${time(v.createdAt)} · ${v.device}" + if (v.id == head) "  · cargada aqui" else "",
+                        fontWeight = if (v.id == head) FontWeight.Bold else FontWeight.Normal,
+                    )
+                    if (v.label.isNotBlank()) Text("“${v.label}”")
+                    Text("${v.files} archivo(s), ${human(v.bytes)}", style = MaterialTheme.typography.bodySmall)
+                }
+                OutlinedButton(onClick = { onLoad(v) }, enabled = enabled && v.id != head) { Text("Cargar") }
+                TextButton(onClick = { editing = if (editing == v.id) null else v.id }) { Text("Etiqueta") }
+            }
+            if (editing == v.id) {
+                var text by remember(v.id) { mutableStateOf(v.label) }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(text, { text = it }, Modifier.weight(1f), singleLine = true, label = { Text("Etiqueta") })
+                    Button(onClick = { sync.setLabel(gameId, v.id, text); editing = null }) { Text("Guardar") }
+                }
+            }
+        } }
     }
 }
 
@@ -284,6 +334,7 @@ private fun SettingsDialog(c: AppController, onClose: () -> Unit) {
     var s by remember { mutableStateOf(c.settings) }
     var poll by remember { mutableStateOf(c.settings.pollMinutes.toString()) }
     var result by remember { mutableStateOf("") }
+    fun saved() = s.copy(pollMinutes = poll.toIntOrNull()?.coerceIn(1, 120) ?: 3)
 
     DialogWindow(onCloseRequest = onClose, title = "Ajustes", state = rememberDialogState(size = DpSize(620.dp, 640.dp))) {
         Surface(Modifier.fillMaxSize()) {
@@ -310,12 +361,9 @@ private fun SettingsDialog(c: AppController, onClose: () -> Unit) {
                 )
                 Text("Datos de mem-card: ${AppPaths.home}", style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = {
-                        c.updateSettings(s.copy(pollMinutes = poll.toIntOrNull()?.coerceIn(1, 120) ?: 3, games = c.settings.games))
-                        onClose()
-                    }) { Text("Guardar") }
+                    Button(onClick = { c.updateSettings(saved()); onClose() }) { Text("Guardar") }
                     OutlinedButton(onClick = {
-                        c.updateSettings(s.copy(pollMinutes = poll.toIntOrNull()?.coerceIn(1, 120) ?: 3, games = c.settings.games))
+                        c.updateSettings(saved())
                         result = "Probando…"
                         c.testConnection { result = it }
                     }) { Text("Guardar y probar") }
@@ -331,24 +379,29 @@ private fun SettingsDialog(c: AppController, onClose: () -> Unit) {
 private fun AddGameDialog(c: AppController, onClose: () -> Unit) {
     var name by remember { mutableStateOf("") }
     var folder by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
     val dir = File(expandEnv(folder.trim()))
 
-    DialogWindow(onCloseRequest = onClose, title = "Agregar juego", state = rememberDialogState(size = DpSize(620.dp, 380.dp))) {
+    DialogWindow(onCloseRequest = onClose, title = "Agregar juego", state = rememberDialogState(size = DpSize(620.dp, 400.dp))) {
         Surface(Modifier.fillMaxSize()) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Nombre (ej. Monster Hunter Freedom Unite)") }, singleLine = true)
+                OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Nombre del juego (ej. Monster Hunter XX)") }, singleLine = true)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(folder, { folder = it }, Modifier.weight(1f), label = { Text("Carpeta de saves (acepta %APPDATA%)") }, singleLine = true)
                     OutlinedButton(onClick = { chooseFolder("Carpeta de saves", folder)?.let { folder = it.absolutePath } }) { Text("Elegir…") }
                 }
                 Text(
-                    "Elige la carpeta del juego, no la de todo el emulador: por ejemplo la del juego dentro de " +
-                        "PSP\\SAVEDATA. Todo lo que este adentro se guarda como una sola partida.",
+                    "Una carpeta por juego. Las distintas partidas del mismo juego se manejan adentro, " +
+                        "con «Partida», no como juegos separados.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 if (folder.isNotBlank() && !dir.isDirectory) Text("Esa carpeta no existe.", color = MaterialTheme.colorScheme.error)
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { c.addGame(name, dir); onClose() }, enabled = name.isNotBlank() && dir.isDirectory) { Text("Agregar") }
+                    Button(onClick = {
+                        error = c.addGame(name, dir)
+                        if (error == null) onClose()
+                    }, enabled = name.isNotBlank() && dir.isDirectory) { Text("Agregar") }
                     TextButton(onClick = onClose) { Text("Cancelar") }
                 }
             }
@@ -360,13 +413,13 @@ private fun AddGameDialog(c: AppController, onClose: () -> Unit) {
 private fun CloudDialog(c: AppController, onClose: () -> Unit) {
     var list by remember { mutableStateOf<List<GameManifest>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) { c.listCloudGames { l, e -> list = l; error = e } }
+    LaunchedEffect(Unit) { c.sync.listCloudGames { l, e -> list = l; error = e } }
 
     DialogWindow(onCloseRequest = onClose, title = "Juegos en la nube", state = rememberDialogState(size = DpSize(620.dp, 520.dp))) {
         Surface(Modifier.fillMaxSize()) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 when {
-                    error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
+                    error != null -> SelectionContainer { Text(error!!, color = MaterialTheme.colorScheme.error) }
                     list == null -> Text("Buscando…")
                     list!!.isEmpty() -> Text("No hay juegos en la nube que no esten ya en este equipo.")
                 }
@@ -376,13 +429,15 @@ private fun CloudDialog(c: AppController, onClose: () -> Unit) {
                             Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
                                     Text(m.name, fontWeight = FontWeight.SemiBold)
-                                    val last = m.versions.maxByOrNull { it.createdAt }
-                                    Text("${m.versions.size} version(es) · ultima: ${AppController.describe(last)}", style = MaterialTheme.typography.bodySmall)
+                                    Text(
+                                        "${m.partidas.size} partida(s): ${m.partidas.joinToString { it.name }}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
                                 }
                                 Button(onClick = {
                                     chooseFolder("Carpeta de saves para ${m.name}", null)?.let {
-                                        c.linkFromCloud(m, it)
-                                        onClose()
+                                        error = c.linkFromCloud(m, it)
+                                        if (error == null) onClose()
                                     }
                                 }) { Text("Enlazar carpeta…") }
                             }

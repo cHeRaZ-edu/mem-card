@@ -127,16 +127,17 @@ class MuveCli(
     }
 
     override fun listGameIds(): List<String> {
-        val res = run("ls", "heads/")
+        val res = run("ls", "$GAMES_DIR/")
         if (res.code != 0) throw DriveException(clean(res.err))
         return parseLs(res.out)
-            .filter { it.startsWith("heads/") && it.endsWith(".json") }
-            .map { it.removePrefix("heads/").removeSuffix(".json") }
+            .filter { it.startsWith("$GAMES_DIR/") && it.endsWith(".json") }
+            .map { it.removePrefix("$GAMES_DIR/").removeSuffix(".json") }
     }
 
     companion object {
         private val VERSION_RE = Regex("""(?m)^version:\s+(\d+)\s*$""")
         private const val EXISTS = "ya existe en la nube"
+        private val GAMES_DIR = DriveStore.manifestPath("x").substringBefore('/')
         private const val RACE = "alguien creo un archivo en esa ruta"
 
         fun isNotFound(err: String) = err.contains("No existe ese archivo")

@@ -13,10 +13,15 @@ data class DriveSettings(
     val device: String = "",
     val pollMinutes: Int = 3,
     val games: List<GameLink> = emptyList(),
+    /** Formato de [games]; los de un formato viejo se descartan al cargar (se enlazan de nuevo). */
+    val gamesFormat: Int = 0,
 ) {
     val configured get() = server.isNotBlank() && apiKey.isNotBlank()
 
     companion object {
+        /** Sube cuando cambie GameLink de forma incompatible (2 = partidas). */
+        const val GAMES_FORMAT = 2
+
         private val json = Json {
             ignoreUnknownKeys = true
             encodeDefaults = true
@@ -24,7 +29,8 @@ data class DriveSettings(
         }
 
         fun load(file: File, defaults: DriveSettings): DriveSettings = try {
-            if (file.isFile) json.decodeFromString(serializer(), file.readText()) else defaults
+            val s = if (file.isFile) json.decodeFromString(serializer(), file.readText()) else defaults
+            if (s.gamesFormat == GAMES_FORMAT) s else s.copy(games = emptyList(), gamesFormat = GAMES_FORMAT)
         } catch (e: Exception) {
             file.copyTo(File(file.parentFile, "${file.name}.bad-${System.currentTimeMillis()}"), overwrite = true)
             defaults

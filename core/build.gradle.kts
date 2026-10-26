@@ -35,6 +35,7 @@ kotlin {
 
         getByName("commonMain").dependencies {
             api(libs.kotlinx.serialization.json)
+            api(libs.kotlinx.coroutines.core)
         }
         getByName("commonTest").dependencies {
             implementation(libs.kotlin.test)

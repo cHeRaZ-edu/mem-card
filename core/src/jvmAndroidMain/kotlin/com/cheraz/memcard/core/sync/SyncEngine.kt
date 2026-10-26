@@ -4,6 +4,7 @@ import com.cheraz.memcard.core.engine.SaveRestorer
 import com.cheraz.memcard.core.engine.SnapshotService
 import com.cheraz.memcard.core.history.GameManifest
 import com.cheraz.memcard.core.history.History
+import com.cheraz.memcard.core.history.Partida
 import com.cheraz.memcard.core.history.SaveVersion
 import com.cheraz.memcard.core.history.Ulid
 import com.cheraz.memcard.core.source.FolderSource
@@ -20,15 +21,17 @@ import java.util.zip.ZipFile
  *
  * @param folder donde vive el save en este dispositivo: ruta en desktop, URI de arbol SAF en Android
  *   (lo interpreta el `folderOf` del [SyncEngine]).
- * @param head version a la que corresponde la carpeta ahorita (la ultima que se subio o restauro).
- * @param pending snapshot local que no se subio porque abriria otro camino y el usuario dijo que no
- *   (o aun no contesta). Se queda solo en este dispositivo.
+ * @param partida la partida en curso EN ESTE dispositivo (null = aun no se elige).
+ * @param head version a la que corresponde la carpeta ahorita (la ultima que se subio o cargo).
+ * @param pending snapshot local que no se subio porque iria a una partida que ya avanzo en otro
+ *   lado, y el usuario no quiso guardarlo como partida nueva (o aun no contesta).
  */
 @Serializable
 data class GameLink(
     val gameId: String,
     val name: String,
     val folder: String,
+    val partida: String? = null,
     val head: String? = null,
     val headHash: String? = null,
     val pending: SaveVersion? = null,
@@ -37,14 +40,18 @@ data class GameLink(
     val autoDownload: Boolean = false,
 )
 
+/** Una partida con su ultima version, para mostrarla. */
+data class PartidaInfo(val partida: Partida, val tip: SaveVersion?, val count: Int)
+
 /** Foto del estado de un juego para la UI. */
 data class GameState(
     val manifest: GameManifest?,
+    /** Todas las partidas: la en curso primero, luego la jugada mas recientemente. */
+    val partidas: List<PartidaInfo>,
+    val current: PartidaInfo?,
     val head: SaveVersion?,
-    /** Puntas que salen de [head] (alguien jugo despues): se pueden bajar. La mas nueva primero. */
-    val newer: List<SaveVersion>,
-    /** Puntas de otros caminos que no salen de [head]. */
-    val otherPaths: List<SaveVersion>,
+    /** La partida en curso avanzo en otro dispositivo despues de [head]: se puede bajar. */
+    val newer: SaveVersion?,
     /** La carpeta ya no es igual a [head] (cambios sin subir). null = no se pudo leer. */
     val localChanged: Boolean?,
     val localError: String? = null,
@@ -56,21 +63,34 @@ sealed interface CommitOutcome {
     /** La carpeta es igual a lo ultimo subido. */
     data class Unchanged(override val link: GameLink) : CommitOutcome
 
-    data class Uploaded(override val link: GameLink, val version: SaveVersion) : CommitOutcome
+    /** @param newPartida si la version abrio una partida nueva. */
+    data class Uploaded(override val link: GameLink, val version: SaveVersion, val newPartida: Partida?) : CommitOutcome
 
-    /** Subir abriria otro camino: hay que preguntar. El snapshot ya quedo en [GameLink.pending]. */
-    data class NeedsFork(override val link: GameLink, val version: SaveVersion) : CommitOutcome
+    /**
+     * No se sabe a que partida va: la partida en curso ya avanzo despues de [GameLink.head] ([tip]),
+     * o este dispositivo aun no elige partida y en la nube ya hay. Hay que preguntar si es una partida
+     * nueva. El snapshot ya quedo en [GameLink.pending].
+     */
+    data class NeedsPartida(override val link: GameLink, val version: SaveVersion, val tip: SaveVersion?) : CommitOutcome
 
-    /** Ya se habia dicho que no al camino nuevo: se actualizo el snapshot local sin subir. */
+    /** Ya se habia dicho que no a la partida nueva: se actualizo el snapshot local sin subir. */
     data class KeptLocal(override val link: GameLink, val version: SaveVersion) : CommitOutcome
 }
+
+/** La partida avanzo en otro dispositivo mientras se subia. */
+private class PartidaMovedException(val tip: SaveVersion?) : Exception()
 
 /**
  * Motor de sync contra el drive. Todo es sincrono y bloqueante (llamar desde un hilo de fondo);
  * las operaciones se serializan con un candado porque comparten la cache local.
  *
- * Cache local ([cacheDir]): `blobs/<hash>.zip` (lo subido y lo bajado), `manifests/<id>.json`
- * (ultima copia mezclada) y `backups/<id>/` (lo que habia antes de cada restauracion).
+ * Modelo: juego → partidas con nombre → versiones en linea. Cada dispositivo tiene una partida en
+ * curso ([GameLink.partida]); lo que guardas se sube a esa. Si esa partida avanzo en otro lado (o
+ * cargaste una version vieja del historial), guardar encima no pisa nada: pregunta si es una
+ * partida nueva.
+ *
+ * Cache local ([cacheDir]): `blobs/<hash>.zip` (lo subido y lo bajado), `manifests2/<id>.json`
+ * (ultima copia mezclada) y `backups/<id>/` (lo que habia antes de cada carga).
  */
 class SyncEngine(
     private val drive: DriveStore,
@@ -105,17 +125,22 @@ class SyncEngine(
     /** Baja el manifiesto (si [remote]) y compara la carpeta contra [GameLink.head]. */
     fun state(link: GameLink, remote: Boolean = true): GameState = synchronized(lock) {
         val manifest = if (remote) pull(link.gameId) else readCached(link.gameId)
+        val infos = manifest?.partidas.orEmpty().map { p ->
+            PartidaInfo(p, manifest!!.tipOf(p.id), manifest.versionsOf(p.id).size)
+        }.sortedWith(
+            compareByDescending<PartidaInfo> { it.partida.id == link.partida }
+                .thenByDescending { it.tip?.createdAt ?: it.partida.createdAt },
+        )
+        val current = infos.firstOrNull { it.partida.id == link.partida }
+        val head = manifest?.find(link.head)
         val history = History(manifest?.versions.orEmpty())
-        val head = history.get(link.head)
-        val tips = history.tips()
-        val newer = if (head == null) emptyList() else tips.filter { it.id != head.id && history.isAncestorOrSelf(head.id, it.id) }
-        val others = tips.filter { t -> t.id != head?.id && t !in newer }
+        val newer = current?.tip?.takeIf { tip -> head != null && tip.id != head.id && history.isAncestorOrSelf(head.id, tip.id) }
         val (changed, err) = try {
             (localHash(link) != link.headHash) to null
         } catch (e: Exception) {
             null to (e.message ?: e.toString())
         }
-        GameState(manifest, head, newer, others, changed, err)
+        GameState(manifest, infos, current, head, newer, changed, err)
     }
 
     /** Hash del contenido actual de la carpeta (sin zip). */
@@ -124,34 +149,29 @@ class SyncEngine(
     // ---------- subir ----------
 
     /**
-     * Toma un snapshot de la carpeta y lo sube como version nueva, hija de [GameLink.head].
-     * Si eso abriria otro camino (alguien ya subio algo despues de [GameLink.head], o la carpeta
-     * nunca se enlazo a una version y en la nube ya hay partidas), no sube salvo [allowFork].
+     * Toma un snapshot de la carpeta y lo sube como version nueva de la partida en curso.
+     *
+     * - Juego nuevo sin partidas en la nube: crea la partida [DEFAULT_PARTIDA].
+     * - [newPartidaName]: lo guarda como partida nueva con ese nombre (aunque no haya cambios).
+     * - Si la partida en curso avanzo en otro lado, o este dispositivo no ha elegido partida, no
+     *   sube: regresa [CommitOutcome.NeedsPartida].
      */
-    fun commit(link: GameLink, label: String = "", allowFork: Boolean = false): CommitOutcome =
-        synchronized(lock) { commitLocked(link, label, allowFork) }
+    fun commit(link: GameLink, label: String = "", newPartidaName: String? = null): CommitOutcome =
+        synchronized(lock) { commitLocked(link, label, newPartidaName?.trim()?.takeIf { it.isNotEmpty() }) }
 
-    private fun commitLocked(link: GameLink, label: String, allowFork: Boolean): CommitOutcome {
+    private fun commitLocked(link: GameLink, label: String, newPartidaName: String?): CommitOutcome {
         val tmp = tempFile()
         try {
             val snap = FileOutputStream(tmp).use { snapshots.snapshot(folderOf(link), it) }
-            if (snap.hash == link.headHash) {
+            if (snap.hash == link.headHash && newPartidaName == null) {
                 return CommitOutcome.Unchanged(link.copy(pending = null, pendingDeclined = false))
-            }
-            val pending = link.pending
-            if (pending != null && pending.hash == snap.hash) {
-                return if (link.pendingDeclined && !allowFork) {
-                    CommitOutcome.KeptLocal(link, pending)
-                } else if (!allowFork) {
-                    CommitOutcome.NeedsFork(link, pending)
-                } else {
-                    upload(link, pending)
-                }
             }
             storeBlob(snap.hash, tmp)
             val now = clock()
-            val version = SaveVersion(
+            val pending = link.pending?.takeIf { it.hash == snap.hash }
+            val version = pending ?: SaveVersion(
                 id = Ulid.next(now),
+                partida = link.partida ?: "",
                 parent = link.head,
                 hash = snap.hash,
                 zipSize = snap.zipSize,
@@ -162,51 +182,104 @@ class SyncEngine(
                 label = label.trim(),
                 labelAt = if (label.isBlank()) 0 else now,
             )
+
+            if (newPartidaName != null) return uploadAsNewPartida(link, version, newPartidaName)
+
             val manifest = pull(link.gameId)
-            val history = History(manifest?.versions.orEmpty())
-            val forks = when {
-                history.versions.isEmpty() -> false
-                link.head == null -> true
-                else -> history.childrenOf(link.head).isNotEmpty()
-            }
+            val current = manifest?.partida(link.partida)
             return when {
-                !forks || allowFork -> upload(link, version)
-                link.pendingDeclined -> CommitOutcome.KeptLocal(link.copy(pending = version), version)
-                else -> CommitOutcome.NeedsFork(link.copy(pending = version, pendingDeclined = false), version)
+                manifest == null || manifest.partidas.isEmpty() -> uploadAsNewPartida(link, version, DEFAULT_PARTIDA)
+                current == null -> askOrKeep(link, version, tip = null)
+                else -> {
+                    val tip = manifest.tipOf(current.id)
+                    if (tip == null || tip.id == link.head) {
+                        try {
+                            upload(link, version.copy(partida = current.id), expectTip = tip?.id, newPartida = null)
+                        } catch (e: PartidaMovedException) {
+                            askOrKeep(link, version, e.tip)
+                        }
+                    } else {
+                        askOrKeep(link, version, tip)
+                    }
+                }
             }
         } finally {
             tmp.delete()
         }
     }
 
-    /** El usuario acepto el camino nuevo: sube [GameLink.pending]. */
-    fun uploadPending(link: GameLink): CommitOutcome = synchronized(lock) {
-        link.pending?.let { upload(link, it) } ?: CommitOutcome.Unchanged(link)
+    private fun askOrKeep(link: GameLink, version: SaveVersion, tip: SaveVersion?): CommitOutcome =
+        if (link.pendingDeclined) {
+            CommitOutcome.KeptLocal(link.copy(pending = version), version)
+        } else {
+            CommitOutcome.NeedsPartida(link.copy(pending = version), version, tip)
+        }
+
+    private fun uploadAsNewPartida(link: GameLink, version: SaveVersion, name: String): CommitOutcome.Uploaded {
+        val now = clock()
+        val p = Partida(id = Ulid.next(now), name = name, nameAt = now, createdAt = now, device = device)
+        return upload(link, version.copy(partida = p.id), expectTip = null, newPartida = p)
     }
 
-    /** El usuario no quiso otro camino: el snapshot se queda local y no vuelve a preguntar. */
+    /** Subir lo que quedo pendiente como partida nueva (el usuario dijo que si y le puso nombre). */
+    fun uploadPendingAsNew(link: GameLink, name: String): CommitOutcome = synchronized(lock) {
+        val clean = name.trim().ifEmpty { DEFAULT_PARTIDA }
+        val p = link.pending
+        if (p == null) commitLocked(link, "", clean) else uploadAsNewPartida(link, p, clean)
+    }
+
+    /** El usuario no quiso partida nueva: el snapshot se queda local y no vuelve a preguntar. */
     fun declinePending(link: GameLink): GameLink = link.copy(pendingDeclined = true)
 
-    private fun upload(link: GameLink, version: SaveVersion): CommitOutcome.Uploaded {
+    /**
+     * @param expectTip la punta que se espera en la partida; si al escribir ya es otra (alguien
+     *   subio a la misma partida en medio), no se sube y se pregunta.
+     */
+    private fun upload(link: GameLink, version: SaveVersion, expectTip: String?, newPartida: Partida?): CommitOutcome.Uploaded {
         val blob = blobFile(version.hash)
         check(blob.isFile) { "Falta el zip local de ${version.hash}" }
         drive.uploadBlob(version.hash, blob)
-        writeWithRetry(link.gameId, link.name) { it.withVersion(version) }
-        val updated = link.copy(head = version.id, headHash = version.hash, pending = null, pendingDeclined = false)
-        return CommitOutcome.Uploaded(updated, version)
+        writeWithRetry(link.gameId, link.name) { m ->
+            if (newPartida == null) {
+                val tip = m.tipOf(version.partida)
+                if (tip?.id != expectTip) throw PartidaMovedException(tip)
+            }
+            (newPartida?.let { m.withPartida(it) } ?: m).withVersion(version)
+        }
+        val updated = link.copy(
+            partida = version.partida,
+            head = version.id,
+            headHash = version.hash,
+            pending = null,
+            pendingDeclined = false,
+        )
+        return CommitOutcome.Uploaded(updated, version, newPartida)
     }
 
     fun setLabel(link: GameLink, versionId: String, label: String): GameManifest = synchronized(lock) {
         writeWithRetry(link.gameId, link.name) { it.withLabel(versionId, label.trim(), clock()) }
     }
 
-    // ---------- restaurar ----------
+    fun renamePartida(link: GameLink, partidaId: String, name: String): GameManifest = synchronized(lock) {
+        writeWithRetry(link.gameId, link.name) { it.withPartidaName(partidaId, name.trim(), clock()) }
+    }
+
+    // ---------- cargar ----------
+
+    /** Carga la ultima version de otra partida y la deja en curso en este dispositivo. */
+    fun switchPartida(link: GameLink, partidaId: String): GameLink = synchronized(lock) {
+        val manifest = readCached(link.gameId) ?: pull(link.gameId)
+        val tip = manifest?.tipOf(partidaId) ?: throw IllegalArgumentException("Esa partida no tiene versiones")
+        restoreLocked(link, tip.id)
+    }
 
     /**
-     * Deja la carpeta igual a [versionId]. Antes guarda un respaldo de lo que habia en
-     * `backups/<gameId>/`, y verifica el zip (hash de contenido) antes de tocar nada.
+     * Deja la carpeta igual a [versionId] y pone su partida en curso. Antes guarda un respaldo de lo
+     * que habia en `backups/<gameId>/` y verifica el zip (hash de contenido) antes de tocar nada.
      */
-    fun restore(link: GameLink, versionId: String): GameLink = synchronized(lock) {
+    fun restore(link: GameLink, versionId: String): GameLink = synchronized(lock) { restoreLocked(link, versionId) }
+
+    private fun restoreLocked(link: GameLink, versionId: String): GameLink {
         val manifest = readCached(link.gameId) ?: pull(link.gameId)
         val version = manifest?.find(versionId) ?: throw IllegalArgumentException("No existe la version $versionId")
         val blob = ensureBlob(version.hash)
@@ -220,7 +293,13 @@ class SyncEngine(
         check(after == version.hash) {
             "La carpeta quedo distinta a la version (¿el emulador estaba abierto?). Hay respaldo en ${backupDir(link.gameId)}"
         }
-        link.copy(head = version.id, headHash = version.hash, pending = null, pendingDeclined = false)
+        return link.copy(
+            partida = version.partida,
+            head = version.id,
+            headHash = version.hash,
+            pending = null,
+            pendingDeclined = false,
+        )
     }
 
     fun backupDir(gameId: String) = File(cacheDir, "backups/$gameId")
@@ -284,10 +363,10 @@ class SyncEngine(
         throw DriveException("Otro dispositivo sigue escribiendo el historial; intenta de nuevo. (${last?.message})")
     }
 
-    private fun manifestFile(gameId: String) = File(cacheDir, "manifests/$gameId.json")
+    private fun manifestFile(gameId: String) = File(cacheDir, "manifests2/$gameId.json")
 
     private fun readCached(gameId: String): GameManifest? =
-        manifestFile(gameId).takeIf { it.isFile }?.let { GameManifest.fromJson(it.readText()) }
+        manifestFile(gameId).takeIf { it.isFile }?.let { runCatching { GameManifest.fromJson(it.readText()) }.getOrNull() }
 
     private fun writeCached(m: GameManifest) {
         val f = manifestFile(m.gameId)
@@ -316,7 +395,8 @@ class SyncEngine(
         return File.createTempFile("snap", ".zip", dir)
     }
 
-    private companion object {
-        const val MAX_RETRIES = 5
+    companion object {
+        const val DEFAULT_PARTIDA = "Principal"
+        private const val MAX_RETRIES = 5
     }
 }

@@ -17,7 +17,7 @@ class DriveException(message: String) : Exception(message)
  * hara con el .aar. Organizacion en el drive (opcion A):
  *
  * - `blobs/<hash>.zip`: snapshots inmutables, nombrados por hash de contenido.
- * - `heads/<gameId>.json`: manifiesto de cada juego, escrito con expected_version.
+ * - `games/<gameId>.json`: manifiesto de cada juego (formato 2, con partidas), escrito con expected_version.
  */
 interface DriveStore {
     /** null si el juego aun no existe en la nube. */
@@ -37,7 +37,7 @@ interface DriveStore {
     fun listGameIds(): List<String>
 
     companion object {
-        fun manifestPath(gameId: String) = "heads/$gameId.json"
+        fun manifestPath(gameId: String) = "games/$gameId.json"
         fun blobPath(hash: String) = "blobs/$hash.zip"
     }
 }

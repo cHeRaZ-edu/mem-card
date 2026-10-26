@@ -22,6 +22,8 @@ data class AppSettings(
     /** Cada cuanto revisar la nube, en minutos. */
     val pollMinutes: Int = 3,
     val games: List<GameLink> = emptyList(),
+    /** Formato de [games]; los de un formato viejo se descartan al cargar (se enlazan de nuevo). */
+    val gamesFormat: Int = 0,
 ) {
     val configured get() = server.isNotBlank() && apiKey.isNotBlank()
 
@@ -73,7 +75,9 @@ class SettingsStore(private val file: File = File(AppPaths.home, "settings.json"
     }
 
     fun load(): AppSettings = try {
-        if (file.isFile) json.decodeFromString(AppSettings.serializer(), file.readText()) else AppSettings()
+        val s = if (file.isFile) json.decodeFromString(AppSettings.serializer(), file.readText()) else AppSettings()
+        val format = com.cheraz.memcard.core.sync.DriveSettings.GAMES_FORMAT
+        if (s.gamesFormat == format) s else s.copy(games = emptyList(), gamesFormat = format)
     } catch (e: Exception) {
         // No perder la config danada: se aparta y se empieza de cero.
         file.copyTo(File(file.parentFile, "settings.bad-${System.currentTimeMillis()}.json"), overwrite = true)
