@@ -130,10 +130,21 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      # core es KMP con target Android: Gradle necesita un SDK aunque aqui solo se compile la parte JVM.
-      - name: SDK de Android (si la imagen no lo trae)
+      # La imagen arm64 no trae SDK de Android y aqui no se compila nada de Android; si AGP lo exige
+      # al configurar, se le da uno minimo (solo la plataforma, que es independiente de la arquitectura).
+      - name: SDK de Android minimo (arm64)
         if: matrix.arch == 'arm64'
-        uses: android-actions/setup-android@v3
+        run: |
+          if [ -n "${ANDROID_HOME:-}" ] && [ -d "$ANDROID_HOME/platforms" ]; then echo "ya hay SDK en $ANDROID_HOME"; exit 0; fi
+          sdk="$RUNNER_TEMP/android-sdk"
+          mkdir -p "$sdk/cmdline-tools"
+          curl -fsSL -o "$RUNNER_TEMP/clt.zip" https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip
+          unzip -q "$RUNNER_TEMP/clt.zip" -d "$sdk/cmdline-tools"
+          mv "$sdk/cmdline-tools/cmdline-tools" "$sdk/cmdline-tools/latest"
+          yes | "$sdk/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$sdk" --licenses > /dev/null || true
+          "$sdk/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$sdk" "platforms;android-37" || echo "::warning::no se pudo bajar platforms;android-37"
+          echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdk" >> "$GITHUB_ENV"
 
       - name: Bajar muve (ultimo release publico)
         run: |
