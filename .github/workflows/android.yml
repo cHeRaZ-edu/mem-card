@@ -107,7 +107,19 @@ jobs:
           retention-days: 14
 
   linux:
-    runs-on: ubuntu-latest
+    # x64 = CachyOS/Arch/etc.; arm64 = Switch con L4T Ubuntu (Tegra X1). jpackage no compila cruzado,
+    # por eso cada uno se arma en su propia maquina.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+            muve: muve-linux-amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            muve: muve-linux-arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -118,16 +130,21 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Bajar muve para Linux x86_64 (ultimo release publico)
+      # core es KMP con target Android: Gradle necesita un SDK aunque aqui solo se compile la parte JVM.
+      - name: SDK de Android (si la imagen no lo trae)
+        if: matrix.arch == 'arm64'
+        uses: android-actions/setup-android@v3
+
+      - name: Bajar muve (ultimo release publico)
         run: |
           mkdir -p desktop/resources/linux
-          curl -fsSL -o desktop/resources/linux/muve https://github.com/cHeRaZ-edu/muve/releases/latest/download/muve-linux-amd64
+          curl -fsSL -o desktop/resources/linux/muve https://github.com/cHeRaZ-edu/muve/releases/latest/download/${{ matrix.muve }}
           chmod +x desktop/resources/linux/muve
           desktop/resources/linux/muve version
 
       - name: App portable (carpeta con Java incluido)
         env:
-          MEMCARD_PACKAGING_JDK: ${{ env.JAVA_HOME_21_X64 }}
+          MEMCARD_PACKAGING_JDK: ${{ env.JAVA_HOME }}
         run: bash scripts/gradle-annotate.sh :desktop:createDistributable --stacktrace
 
       - name: Revisar contenido y version de clases (max Java 21 = 65)
@@ -139,19 +156,21 @@ jobs:
           # Compose copia los recursos sin el permiso de ejecucion: se le pone aqui para el tar.
           chmod +x "$muve"
           "$muve" version
-          echo "muve en $muve"
+          file "$app/lib/runtime/lib/server/libjvm.so" "$muve" || true
           for jar in "$app"/lib/app/core-jvm*.jar "$app"/lib/app/desktop-*.jar; do
             cls=$(unzip -Z1 "$jar" | grep '\.class$' | head -1)
             major=$(unzip -p "$jar" "$cls" | od -An -tu1 -j6 -N2 | awk '{print $1*256+$2}')
             echo "$(basename "$jar"): version $major"
             [ "$major" -le 65 ] || { echo "::error::$(basename "$jar") compilado para version $major (> 65)"; exit 1; }
           done
+          ls "$app"/lib/app | grep -i skiko
 
       - name: Arrancar la app sin pantalla (humo)
         run: |
+          command -v xvfb-run >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq xvfb; }
           app=desktop/build/compose/binaries/main/app/mem-card
           export MEMCARD_HOME="$RUNNER_TEMP/memcard-home"
-          timeout 25 xvfb-run -a "$app/bin/mem-card" > smoke.log 2>&1 || code=$?
+          timeout 40 xvfb-run -a "$app/bin/mem-card" > smoke.log 2>&1 || code=$?
           cat smoke.log
           # 124 = sigue viva cuando se acabo el tiempo: arranco bien.
           [ "${code:-0}" = 124 ] || { echo "::error::la app termino sola (codigo ${code:-0}): $(tail -5 smoke.log | tr '\n' ' ')"; exit 1; }
@@ -159,11 +178,11 @@ jobs:
       - name: tar.gz
         run: |
           cp desktop/packaging/linux/install.sh desktop/build/compose/binaries/main/app/mem-card/
-          tar -czf mem-card-linux-x64.tar.gz -C desktop/build/compose/binaries/main/app mem-card
+          tar -czf mem-card-linux-${{ matrix.arch }}.tar.gz -C desktop/build/compose/binaries/main/app mem-card
 
       - uses: actions/upload-artifact@v4
         with:
-          name: memcard-linux
-          path: mem-card-linux-x64.tar.gz
+          name: memcard-linux-${{ matrix.arch }}
+          path: mem-card-linux-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
           retention-days: 14
