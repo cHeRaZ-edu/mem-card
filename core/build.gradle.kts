@@ -3,11 +3,17 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.kotlin.multiplatform.library)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 // Logica pura: sin Compose, sin Android SDK en commonMain. Desktop (Linux/Windows) entra despues por el target jvm.
 kotlin {
-    jvm()
+    // Java 17: el runtime que trae la app de Windows es 21 y no carga clases mas nuevas.
+    jvm {
+        compilerOptions {
+            jvmTarget = JvmTarget.JVM_17
+        }
+    }
 
     android {
         namespace = "com.cheraz.memcard.core"
@@ -20,7 +26,18 @@ kotlin {
     }
 
     sourceSets {
-        commonTest.dependencies {
+        // Codigo que usa java.io / java.util.zip / java.security y corre igual en Android y en JVM (desktop).
+        val jvmAndroidMain = create("jvmAndroidMain") {
+            dependsOn(getByName("commonMain"))
+        }
+        getByName("jvmMain").dependsOn(jvmAndroidMain)
+        getByName("androidMain").dependsOn(jvmAndroidMain)
+
+        getByName("commonMain").dependencies {
+            api(libs.kotlinx.serialization.json)
+            api(libs.kotlinx.coroutines.core)
+        }
+        getByName("commonTest").dependencies {
             implementation(libs.kotlin.test)
         }
     }

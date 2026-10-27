@@ -1,3 +1,5 @@
+import java.net.URI
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -47,12 +49,46 @@ android {
     buildFeatures {
         compose = true
     }
+    packaging {
+        jniLibs {
+            // libmuve.so es el CLI de muve (un ejecutable, no una libreria): tiene que quedar extraido
+            // en nativeLibraryDir para poder ejecutarlo, y sin pasar por strip.
+            useLegacyPackaging = true
+            keepDebugSymbols += "**/libmuve.so"
+        }
+    }
 }
+
+// El APK full trae el CLI de muve para Android (arm64) como libmuve.so. Se baja del ultimo release
+// publico de cHeRaZ-edu/muve la primera vez; para actualizarlo, borra el archivo y vuelve a compilar.
+val muveLib = layout.projectDirectory.file("src/full/jniLibs/arm64-v8a/libmuve.so").asFile
+val fetchMuve = tasks.register("fetchMuve") {
+    description = "Baja muve-android-arm64 a src/full/jniLibs como libmuve.so"
+    val out = muveLib
+    outputs.file(out)
+    onlyIf { !out.exists() }
+    doLast {
+        out.parentFile.mkdirs()
+        val tmp = File(out.parentFile, "libmuve.so.part")
+        URI("https://github.com/cHeRaZ-edu/muve/releases/latest/download/muve-android-arm64")
+            .toURL().openStream().use { input -> tmp.outputStream().use { input.copyTo(it) } }
+        val head = tmp.inputStream().use { it.readNBytes(4) }
+        check(head.contentEquals(byteArrayOf(0x7f, 'E'.code.toByte(), 'L'.code.toByte(), 'F'.code.toByte()))) {
+            "Lo que se bajo no es un ejecutable de Android"
+        }
+        check(tmp.renameTo(out)) { "No se pudo guardar $out" }
+    }
+}
+tasks.named("preBuild") { dependsOn(fetchMuve) }
 
 dependencies {
     implementation(project(":core"))
+    implementation(project(":source-saf"))
     implementation(project(":transport-rfcomm"))
     "fullImplementation"(project(":backend-drive"))
+
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.androidx.documentfile) // solo para comparar su velocidad contra DocumentsContract en el laboratorio SAF
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)

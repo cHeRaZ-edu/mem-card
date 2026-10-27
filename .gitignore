@@ -20,3 +20,8 @@ local.properties
 .DS_Store
 *.jks
 *.keystore
+
+# muve.exe lo baja el CI al empaquetar
+desktop/resources/*/muve*
+# muve para Android lo baja la tarea fetchMuve
+app/src/full/jniLibs/
