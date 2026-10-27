@@ -136,7 +136,9 @@ jobs:
           test -x "$app/bin/mem-card" || { echo "::error::falta bin/mem-card"; exit 1; }
           muve=$(find "$app" -name muve -type f | head -1)
           test -n "$muve" || { echo "::error::falta muve dentro de la app"; exit 1; }
-          test -x "$muve" || { echo "::error::muve no es ejecutable: $muve"; exit 1; }
+          # Compose copia los recursos sin el permiso de ejecucion: se le pone aqui para el tar.
+          chmod +x "$muve"
+          "$muve" version
           echo "muve en $muve"
           for jar in "$app"/lib/app/core-jvm*.jar "$app"/lib/app/desktop-*.jar; do
             cls=$(unzip -Z1 "$jar" | grep '\.class$' | head -1)
