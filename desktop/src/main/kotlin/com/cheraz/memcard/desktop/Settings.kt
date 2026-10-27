@@ -46,25 +46,37 @@ data class AppSettings(
 object AppPaths {
     /**
      * `MEMCARD_HOME` si esta definida; si junto a la app hay una carpeta `data` (modo portable, ej. en una
-     * USB), esa; si no `%APPDATA%\mem-card` en Windows o `~/.config/mem-card` en Linux.
+     * USB), esa; si no `%APPDATA%\mem-card` en Windows o `$XDG_CONFIG_HOME/mem-card` (`~/.config/mem-card`) en Linux.
      */
     val home: File by lazy {
         System.getenv("MEMCARD_HOME")?.takeIf { it.isNotBlank() }?.let { return@lazy File(it) }
         appDir()?.let { File(it, "data") }?.takeIf { it.isDirectory }?.let { return@lazy it }
         val appData = System.getenv("APPDATA")
-        if (!appData.isNullOrBlank()) File(appData, "mem-card")
-        else File(System.getProperty("user.home"), ".config/mem-card")
+        val xdg = System.getenv("XDG_CONFIG_HOME")
+        when {
+            !appData.isNullOrBlank() -> File(appData, "mem-card")
+            !xdg.isNullOrBlank() -> File(xdg, "mem-card")
+            else -> File(System.getProperty("user.home"), ".config/mem-card")
+        }
     }
 
     val cache: File get() = File(home, "cache")
 
-    /** Carpeta de la app instalada/descomprimida (donde esta mem-card.exe), si se sabe. */
-    fun appDir(): File? = System.getProperty("compose.application.resources.dir")
-        ?.let { File(it) }?.parentFile?.parentFile?.takeIf { it.isDirectory }
+    /**
+     * Carpeta de la app descomprimida, si se sabe. Windows: `mem-card/app/resources` → `mem-card`.
+     * Linux: `mem-card/lib/app/resources` → `mem-card` (donde esta bin/).
+     */
+    fun appDir(): File? {
+        val app = System.getProperty("compose.application.resources.dir")?.let { File(it).parentFile } ?: return null
+        val root = if (app.parentFile?.name == "lib") app.parentFile.parentFile else app.parentFile
+        return root?.takeIf { it.isDirectory }
+    }
 
     /** muve.exe que trae la app (resources/windows/muve.exe), si existe. */
     fun bundledMuve(): File? = System.getProperty("compose.application.resources.dir")
         ?.let { dir -> listOf("muve.exe", "muve").map { File(dir, it) }.firstOrNull { it.isFile } }
+        // En Linux el permiso de ejecucion se puede perder al descomprimir: se vuelve a poner.
+        ?.also { if (!it.canExecute()) it.setExecutable(true) }
 }
 
 class SettingsStore(private val file: File = File(AppPaths.home, "settings.json")) {

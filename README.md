@@ -24,6 +24,18 @@ En el drive: `blobs/<hash>.zip` (snapshots inmutables) y `heads/<juego>.json` (h
 si dices que no, esa partida se queda solo en ese equipo. Antes de restaurar siempre deja un respaldo
 en `%APPDATA%\mem-card\cache\backups`.
 
+## Linux (CachyOS, Arch y demas x86_64)
+
+Artefacto `memcard-linux` del CI: trae `mem-card-linux-x64.tar.gz` con Java y `muve` adentro.
+
+```bash
+tar -xzf mem-card-linux-x64.tar.gz -C ~/Apps     # o donde quieras
+~/Apps/mem-card/install.sh                       # opcional: lo agrega al menu de aplicaciones
+~/Apps/mem-card/bin/mem-card
+```
+
+Los datos van en `~/.config/mem-card` (o `$MEMCARD_HOME`). El tema claro/oscuro sigue a KDE o GNOME.
+
 ## Versiones de la app Android
 
 | Flavor | Para qué | Internet | Drive |
